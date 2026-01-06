@@ -1,0 +1,72 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.exe.nsis
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor directory (optional, depends on project)
+vendor/
+!vendor/README.md
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+coverage.out
+coverage/
+
+# Coverage directory from go test
+coverage.txt
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Environment files (sensitive)
+.env
+.env.local
+.env.*.local
+
+# Configuration files with secrets (optional, uncomment if needed)
+# config.yaml
+# config*.yaml
+
+# Build artifacts
+bin/
+build/
+dist/
+
+# Test artifacts
+*.test
+coverage.out
+
+# Temporary directories created during tests
+testdata/tmp/
