@@ -40,6 +40,12 @@ func NewClient(cfg *config.ModelConfig) (*Client, error) {
 	}, nil
 }
 
+// GetChatModel returns the underlying Eino chat model as an interface
+// This can be type-asserted to model.BaseChatModel or model.ToolCallingChatModel
+func (c *Client) GetChatModel() interface{} {
+	return c.chatModel
+}
+
 // Generate generates a chat completion
 func (c *Client) Generate(ctx context.Context, messages []Message) (string, error) {
 	// Convert to Eino schema messages

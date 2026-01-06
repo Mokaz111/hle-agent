@@ -32,47 +32,55 @@ func (e *SageMathExecutor) Description() string {
 }
 
 // Execute executes SageMath code
-func (e *SageMathExecutor) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-	// Extract code from params
-	code, ok := params["code"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing or invalid 'code' parameter")
+func (e *SageMathExecutor) Execute(ctx context.Context, params string) (string, error) {
+	// Extract code from params (JSON format)
+	var paramsMap map[string]interface{}
+	if err := json.Unmarshal([]byte(params), &paramsMap); err != nil {
+		return "", fmt.Errorf("invalid params format: %w", err)
 	}
-	
+
+	// Extract code from params
+	code, ok := paramsMap["code"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing or invalid 'code' parameter")
+	}
+
 	// Build the SageMath command - use sage -c for command line execution
 	cmd := exec.CommandContext(ctx, "sage", "-c", code)
-	
+
 	// Set timeout if not already in context
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, e.timeout)
 		defer cancel()
 	}
-	
+
 	// Execute command
 	startTime := time.Now()
 	output, err := cmd.CombinedOutput()
 	duration := time.Since(startTime).Seconds()
-	
+
 	// Parse output
 	result := make(map[string]interface{})
 	result["code"] = code
 	result["duration_seconds"] = duration
-	
+
 	if err != nil {
 		result["success"] = false
 		result["error"] = string(output)
-		return result, fmt.Errorf("SageMath execution failed: %s", string(output))
+		return "", fmt.Errorf("SageMath execution failed: %s", string(output))
 	}
-	
+
 	result["success"] = true
 	result["output"] = strings.TrimSpace(string(output))
-	
-	return result, nil
+
+	// Return JSON result
+	jsonResult, _ := json.Marshal(result)
+	return string(jsonResult), nil
 }
 
 // ExecuteWithInput executes SageMath code with input data
-func (e *SageMathExecutor) ExecuteWithInput(ctx context.Context, code string, input interface{}) (interface{}, error) {
+func (e *SageMathExecutor) ExecuteWithInput(ctx context.Context, code string, input interface{}) (string, error) {
 	// Wrap code with input variable
 	wrappedCode := fmt.Sprintf(`
 # Input data as Python dictionary
@@ -84,10 +92,8 @@ input_data = %s
 # Print result
 print(result)
 `, formatSageInput(input), code)
-	
-	return e.Execute(ctx, map[string]interface{}{
-		"code": wrappedCode,
-	})
+
+	return e.Execute(ctx, fmt.Sprintf(`{"code": %s}`, formatSageInput(wrappedCode)))
 }
 
 // formatSageInput formats input data for SageMath

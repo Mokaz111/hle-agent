@@ -32,47 +32,55 @@ func (e *PythonExecutor) Description() string {
 }
 
 // Execute executes Python code
-func (e *PythonExecutor) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-	// Extract code from params
-	code, ok := params["code"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing or invalid 'code' parameter")
+func (e *PythonExecutor) Execute(ctx context.Context, params string) (string, error) {
+	// Extract code from params (JSON format)
+	var paramsMap map[string]interface{}
+	if err := json.Unmarshal([]byte(params), &paramsMap); err != nil {
+		return "", fmt.Errorf("invalid params format: %w", err)
 	}
-	
+
+	// Extract code from params
+	code, ok := paramsMap["code"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing or invalid 'code' parameter")
+	}
+
 	// Build the Python command
 	cmd := exec.CommandContext(ctx, "python3", "-c", code)
-	
+
 	// Set timeout if not already in context
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, e.timeout)
 		defer cancel()
 	}
-	
+
 	// Execute command
 	startTime := time.Now()
 	output, err := cmd.CombinedOutput()
 	duration := time.Since(startTime).Seconds()
-	
+
 	// Parse output
 	result := make(map[string]interface{})
 	result["code"] = code
 	result["duration_seconds"] = duration
-	
+
 	if err != nil {
 		result["success"] = false
 		result["error"] = string(output)
-		return result, fmt.Errorf("Python execution failed: %s", string(output))
+		return "", fmt.Errorf("Python execution failed: %s", string(output))
 	}
-	
+
 	result["success"] = true
 	result["output"] = strings.TrimSpace(string(output))
-	
-	return result, nil
+
+	// Return JSON result
+	jsonResult, _ := json.Marshal(result)
+	return string(jsonResult), nil
 }
 
 // ExecuteWithInput executes Python code with input data
-func (e *PythonExecutor) ExecuteWithInput(ctx context.Context, code string, input interface{}) (interface{}, error) {
+func (e *PythonExecutor) ExecuteWithInput(ctx context.Context, code string, input interface{}) (string, error) {
 	// Wrap code with input variable
 	wrappedCode := fmt.Sprintf(`
 import json
@@ -84,10 +92,8 @@ input_data = %s
 # Print result
 print(json.dumps(result))
 `, formatInput(input), code)
-	
-	return e.Execute(ctx, map[string]interface{}{
-		"code": wrappedCode,
-	})
+
+	return e.Execute(ctx, fmt.Sprintf(`{"code": %s}`, formatInput(wrappedCode)))
 }
 
 // formatInput formats input data as JSON

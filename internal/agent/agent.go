@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 	"go.uber.org/zap"
@@ -20,6 +21,8 @@ import (
 	"github.com/hle-agent/hle-agent/pkg/perception"
 	"github.com/hle-agent/hle-agent/pkg/retriever"
 	"github.com/hle-agent/hle-agent/pkg/utils"
+	pythonTool "github.com/hle-agent/hle-agent/tools/python_executor"
+	sageTool "github.com/hle-agent/hle-agent/tools/sagemath_executor"
 )
 
 // HLEAgent represents the HLE Exam Answering Agent
@@ -63,6 +66,17 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	// Create tool registry
 	toolRegistry := NewToolRegistry()
 
+	// Register available tools
+	pythonExecutor := pythonTool.NewPythonExecutor(300) // 5分钟超时
+	sageExecutor := sageTool.NewSageMathExecutor(300)
+
+	toolRegistry.Register(pythonExecutor)
+	toolRegistry.Register(sageExecutor)
+
+	logger.Info("已注册工具",
+		zap.String("python_executor", pythonExecutor.Name()),
+		zap.String("sagemath_executor", sageExecutor.Name()))
+
 	// Create retriever
 	shortTermMem := memory.NewDefaultMemory()
 	shortTermMem.StartSession(generateSessionID())
@@ -80,9 +94,14 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	// Create Eino ADK Plan-Execute Agent using factory functions
 	ctx := context.Background()
 
+	// 获取 LLM 客户端的 chatModel
+	chatModel := llmClient.GetChatModel().(*openai.ChatModel)
+
 	// Create planner agent with our custom planner
+	// 使用 ChatModelWithFormattedOutput 避免 Eino ADK 内部 panic
 	plannerAgent, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
-		NewPlan: planner.CreatePlan,
+		ChatModelWithFormattedOutput: chatModel,
+		NewPlan:                      planner.CreatePlan,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Planner 失败: %w", err)
@@ -90,7 +109,7 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 
 	// Create executor agent with our custom executor
 	executorAgent, err := planexecute.NewExecutor(ctx, &planexecute.ExecutorConfig{
-		// 使用内置的执行器配置
+		Model: chatModel,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Executor 失败: %w", err)
@@ -98,7 +117,8 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 
 	// Create replanner agent with our custom replanner
 	replannerAgent, err := planexecute.NewReplanner(ctx, &planexecute.ReplannerConfig{
-		NewPlan: replanner.CreatePlan,
+		ChatModel: chatModel,
+		NewPlan:   replanner.CreatePlan,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Replanner 失败: %w", err)
