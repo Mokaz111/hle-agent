@@ -97,13 +97,13 @@ func TestToolRegistryOverwrite(t *testing.T) {
 type testTool struct {
 	name        string
 	description string
-	result      interface{}
+	result      string
 }
 
-func (t *testTool) Name() string                                            { return t.name }
-func (t *testTool) Description() string                                     { return t.description }
-func (t *testTool) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-	if t.result != nil {
+func (t *testTool) Name() string        { return t.name }
+func (t *testTool) Description() string { return t.description }
+func (t *testTool) Execute(ctx context.Context, params string) (string, error) {
+	if t.result != "" {
 		return t.result, nil
 	}
 	return "default", nil

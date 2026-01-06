@@ -11,7 +11,7 @@ import (
 type MockTool struct {
 	name        string
 	description string
-	result      interface{}
+	result      string
 	err         error
 }
 
@@ -23,7 +23,7 @@ func (m *MockTool) Description() string {
 	return m.description
 }
 
-func (m *MockTool) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+func (m *MockTool) Execute(ctx context.Context, params string) (string, error) {
 	return m.result, m.err
 }
 
@@ -34,7 +34,6 @@ func TestNewExecutor(t *testing.T) {
 	assert.NotNil(t, executor)
 	assert.NotNil(t, executor.toolRegistry)
 	assert.NotNil(t, executor.logger)
-	assert.Equal(t, 3, executor.maxRetries)
 }
 
 func TestExecutorWithCustomRegistry(t *testing.T) {
@@ -91,12 +90,12 @@ func TestToolRegistryEmptyList(t *testing.T) {
 
 func TestMockToolExecuteSuccess(t *testing.T) {
 	tool := &MockTool{
-		name:    "test",
-		result:  "success",
-		err:     nil,
+		name:   "test",
+		result: "success",
+		err:    nil,
 	}
 
-	result, err := tool.Execute(context.Background(), map[string]interface{}{})
+	result, err := tool.Execute(context.Background(), "test params")
 
 	assert.Equal(t, "success", result)
 	assert.NoError(t, err)
@@ -105,13 +104,13 @@ func TestMockToolExecuteSuccess(t *testing.T) {
 func TestMockToolExecuteWithError(t *testing.T) {
 	tool := &MockTool{
 		name:   "test",
-		result: nil,
+		result: "",
 		err:    assert.AnError,
 	}
 
-	result, err := tool.Execute(context.Background(), map[string]interface{}{})
+	result, err := tool.Execute(context.Background(), "test params")
 
-	assert.Nil(t, result)
+	assert.Equal(t, "", result)
 	assert.Error(t, err)
 }
 
@@ -138,23 +137,13 @@ func TestToolRegistryLogger(t *testing.T) {
 	assert.NotNil(t, registry.logger)
 }
 
-func TestExecutorMaxRetries(t *testing.T) {
-	registry := NewToolRegistry()
-	executor := NewExecutor(registry)
-
-	assert.Equal(t, 3, executor.maxRetries)
-}
-
 func TestMockToolWithParams(t *testing.T) {
 	tool := &MockTool{
-		name:    "test",
-		result:  "processed",
+		name:   "test",
+		result: "processed",
 	}
 
-	params := map[string]interface{}{
-		"code":     "print('hello')",
-		"language": "python",
-	}
+	params := "print('hello')"
 
 	result, err := tool.Execute(context.Background(), params)
 

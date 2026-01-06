@@ -2,142 +2,117 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"strings"
-	"time"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/schema"
 	"github.com/hle-agent/hle-agent/internal/config"
 )
 
-// Message represents a chat message
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+// Message represents a chat message (for backward compatibility)
+type Message = schema.Message
 
-// ChatRequest represents a chat completion request
-type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-}
-
-// ChatResponse represents a chat completion response
-type ChatResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
-}
-
-// Choice represents a chat completion choice
-type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
-}
-
-// Usage represents token usage
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
-
-// Client represents an LLM client
+// Client represents an LLM client using Eino OpenAI integration
 type Client struct {
+	chatModel *openai.ChatModel
 	cfg       *config.ModelConfig
-	httpClient *http.Client
 }
 
-// NewClient creates a new LLM client
-func NewClient(cfg *config.ModelConfig) *Client {
-	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: time.Duration(cfg.Timeout) * time.Second,
-		},
+// NewClient creates a new LLM client using Eino OpenAI
+func NewClient(cfg *config.ModelConfig) (*Client, error) {
+	// Convert config values to pointers for Eino
+	temp := float32(cfg.Temperature)
+	maxTokens := cfg.MaxTokens
+
+	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
+		Model:       cfg.Model,
+		APIKey:      cfg.APIKey,
+		BaseURL:     cfg.BaseURL,
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+	})
+	if err != nil {
+		return nil, err
 	}
+
+	return &Client{
+		chatModel: chatModel,
+		cfg:       cfg,
+	}, nil
 }
 
 // Generate generates a chat completion
 func (c *Client) Generate(ctx context.Context, messages []Message) (string, error) {
-	// Build request
-	req := ChatRequest{
-		Model:       c.cfg.Model,
-		Messages:    messages,
-		Temperature: c.cfg.Temperature,
-		MaxTokens:   c.cfg.MaxTokens,
+	// Convert to Eino schema messages
+	einoMessages := make([]*schema.Message, len(messages))
+	for i, msg := range messages {
+		einoMessages[i] = &schema.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
 	}
 
-	// Convert to JSON
-	reqBody, err := json.Marshal(req)
+	// Generate response
+	resp, err := c.chatModel.Generate(ctx, einoMessages)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", err
 	}
 
-	// Create HTTP request
-	url := fmt.Sprintf("%s/chat/completions", c.cfg.BaseURL)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(reqBody)))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+	if resp == nil {
+		return "", nil
 	}
 
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.cfg.APIKey))
-
-	// Send request
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var chatResp ChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	// Extract content
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
-	}
-
-	return chatResp.Choices[0].Message.Content, nil
+	// Extract content from response
+	// Eino returns *schema.Message directly
+	return resp.Content, nil
 }
 
 // GenerateWithSystemPrompt generates a chat completion with system prompt
 func (c *Client) GenerateWithSystemPrompt(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-	messages := []Message{
+	messages := []*schema.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
 
-	return c.Generate(ctx, messages)
+	resp, err := c.chatModel.Generate(ctx, messages)
+	if err != nil {
+		return "", err
+	}
+
+	if resp == nil {
+		return "", nil
+	}
+
+	return resp.Content, nil
 }
 
 // Stream generates a chat completion with streaming
 func (c *Client) Stream(ctx context.Context, messages []Message, callback func(string)) error {
-	// TODO: Implement streaming
-	_ = callback
+	// Convert to Eino schema messages
+	einoMessages := make([]*schema.Message, len(messages))
+	for i, msg := range messages {
+		einoMessages[i] = &schema.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
 
-	return fmt.Errorf("streaming not implemented yet")
+	// Create stream reader
+	stream, err := c.chatModel.Stream(ctx, einoMessages)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	// Process stream
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		if msg != nil {
+			callback(msg.Content)
+		}
+	}
+
+	return nil
 }

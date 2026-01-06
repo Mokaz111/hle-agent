@@ -3,8 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
+	"go.uber.org/zap"
 
 	"github.com/hle-agent/hle-agent/internal/config"
 	"github.com/hle-agent/hle-agent/internal/models"
@@ -15,22 +20,23 @@ import (
 	"github.com/hle-agent/hle-agent/pkg/perception"
 	"github.com/hle-agent/hle-agent/pkg/retriever"
 	"github.com/hle-agent/hle-agent/pkg/utils"
-	"go.uber.org/zap"
 )
 
 // HLEAgent represents the HLE Exam Answering Agent
 type HLEAgent struct {
-	cfg           *config.Config
-	llmClient     *llm.Client
-	planner       *Planner
-	executor      *Executor
-	replanner     *Replanner
-	toolRegistry  *ToolRegistry
-	shortTermMem  *memory.ShortTermMemory
-	perception    *perception.Perception
-	retriever     *retriever.Retriever
-	feedback      *feedback.Feedback
-	logger        *zap.Logger
+	cfg          *config.Config
+	llmClient    *llm.Client
+	planner      *Planner
+	executor     *Executor
+	replanner    *Replanner
+	agent        adk.Agent
+	toolRegistry *ToolRegistry
+	shortTermMem *memory.ShortTermMemory
+	perception   *perception.Perception
+	retriever    *retriever.Retriever
+	feedback     *feedback.Feedback
+	logger       *zap.Logger
+	agentName    string
 }
 
 // NewHLEAgent creates a new HLE Agent instance
@@ -49,13 +55,21 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	}
 
 	// Create LLM client
-	llmClient := llm.NewClient(&cfg.Model)
+	llmClient, err := llm.NewClient(&cfg.Model)
+	if err != nil {
+		return nil, fmt.Errorf("创建 LLM 客户端失败: %w", err)
+	}
 
 	// Create tool registry
 	toolRegistry := NewToolRegistry()
 
+	// Create retriever
+	shortTermMem := memory.NewDefaultMemory()
+	shortTermMem.StartSession(generateSessionID())
+	retrieverLayer := retriever.NewRetriever(shortTermMem, nil)
+
 	// Create Planner
-	planner := NewPlanner(llmClient)
+	planner := NewPlanner(llmClient, retrieverLayer)
 
 	// Create Executor
 	executor := NewExecutor(toolRegistry)
@@ -63,9 +77,42 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	// Create Replanner
 	replanner := NewReplanner(llmClient)
 
-	// Create short-term memory
-	shortTermMem := memory.NewDefaultMemory()
-	shortTermMem.StartSession(generateSessionID())
+	// Create Eino ADK Plan-Execute Agent using factory functions
+	ctx := context.Background()
+
+	// Create planner agent with our custom planner
+	plannerAgent, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
+		NewPlan: planner.CreatePlan,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Planner 失败: %w", err)
+	}
+
+	// Create executor agent with our custom executor
+	executorAgent, err := planexecute.NewExecutor(ctx, &planexecute.ExecutorConfig{
+		// 使用内置的执行器配置
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Executor 失败: %w", err)
+	}
+
+	// Create replanner agent with our custom replanner
+	replannerAgent, err := planexecute.NewReplanner(ctx, &planexecute.ReplannerConfig{
+		NewPlan: replanner.CreatePlan,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Replanner 失败: %w", err)
+	}
+
+	// Create the main plan-execute agent
+	einoAgent, err := planexecute.New(ctx, &planexecute.Config{
+		Planner:   plannerAgent,
+		Executor:  executorAgent,
+		Replanner: replannerAgent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Eino Agent 失败: %w", err)
+	}
 
 	// Create perception layer
 	perceptionLayer := perception.NewPerception()
@@ -73,28 +120,38 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	// Create feedback layer
 	feedbackLayer := feedback.NewFeedback()
 
-	// Create retriever
-	retrieverLayer := retriever.NewRetriever(shortTermMem, nil)
-
 	agent := &HLEAgent{
-		cfg:           cfg,
-		llmClient:     llmClient,
-		planner:       planner,
-		executor:      executor,
-		replanner:     replanner,
-		toolRegistry:  toolRegistry,
-		shortTermMem:  shortTermMem,
-		perception:    perceptionLayer,
-		retriever:     retrieverLayer,
-		feedback:      feedbackLayer,
-		logger:        logger,
+		cfg:          cfg,
+		llmClient:    llmClient,
+		planner:      planner,
+		executor:     executor,
+		replanner:    replanner,
+		agent:        einoAgent,
+		toolRegistry: toolRegistry,
+		shortTermMem: shortTermMem,
+		perception:   perceptionLayer,
+		retriever:    retrieverLayer,
+		feedback:     feedbackLayer,
+		logger:       logger,
+		agentName:    "hle-agent",
 	}
 
 	logger.Info("HLE Agent 初始化完成")
 	return agent, nil
 }
 
-// Process processes a single question and returns the answer
+// GetName returns the agent name
+func (a *HLEAgent) GetName() string {
+	return a.agentName
+}
+
+// Run executes the agent with the given input
+// Implements the Eino ADK Agent interface
+func (a *HLEAgent) Run(ctx context.Context, input *adk.AgentInput, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	return a.agent.Run(ctx, input, opts...)
+}
+
+// Process processes a single question and returns the answer (legacy method)
 func (a *HLEAgent) Process(ctx context.Context, question string) (*AnswerResult, error) {
 	logger := a.logger.With(
 		zap.String("action", "Process"),
@@ -105,233 +162,231 @@ func (a *HLEAgent) Process(ctx context.Context, question string) (*AnswerResult,
 
 	startTime := time.Now()
 
+	// Start new session
+	sessionID := generateSessionID()
+	a.shortTermMem.StartSession(sessionID)
+
 	// Step 0: Perception layer - analyze the question
-	preprocessedQuestion := a.perception.Preprocess(question)
-	analysisResult := a.perception.Analyze(preprocessedQuestion)
+	analysis := a.perception.Analyze(question)
 
-	logger.Info("问题感知分析完成",
-		zap.String("domain", string(analysisResult.Domain)),
-		zap.String("sub_domain", analysisResult.SubDomain),
-		zap.String("complexity", string(analysisResult.Complexity)),
-		zap.Bool("has_code", analysisResult.CodePresent),
-		zap.Strings("keywords", analysisResult.Keywords))
+	logger.Debug("感知层分析完成",
+		zap.String("domain", string(analysis.Domain)),
+		zap.Bool("has_code", analysis.QuestionInfo.CodePresent))
 
-	// Step 0.5: Add question to short-term memory with perception metadata
-	a.shortTermMem.AddQuestion(preprocessedQuestion, map[string]interface{}{
-		"domain":     analysisResult.Domain,
-		"sub_domain": analysisResult.SubDomain,
-		"complexity": analysisResult.Complexity,
-		"has_code":   analysisResult.CodePresent,
-		"code_lang":  analysisResult.CodeLanguage,
-		"keywords":   analysisResult.Keywords,
-	})
+	// Store question in short-term memory
+	a.shortTermMem.AddQuestion(question, analysis)
 
-	logger.Debug("问题已添加到短期记忆",
-		zap.Int("history_size", len(a.shortTermMem.GetRecentHistory(10))))
+	// Step 1: Retrieve similar historical problems (if configured)
+	var historicalContext string
+	if a.retriever != nil {
+		recommendedTool := a.perception.GetRecommendedTool(question)
+		tools := []string{}
+		if recommendedTool != "" {
+			tools = append(tools, recommendedTool)
+		}
 
-	// Step 0.7: Retrieve similar historical knowledge
-	retrievedContext := a.retriever.BuildContextForPlanner(
-		preprocessedQuestion,
-		string(analysisResult.Domain),
-		analysisResult.Keywords,
-		string(analysisResult.Complexity),
-	)
+		complexity := "medium"
+		if analysis.QuestionInfo != nil {
+			if analysis.QuestionInfo.Complexity == "high" {
+				complexity = "high"
+			} else if analysis.QuestionInfo.Complexity == "low" {
+				complexity = "low"
+			}
+		}
 
-	if retrievedContext != "" {
-		logger.Info("检索到相关历史知识",
-			zap.Int("context_length", len(retrievedContext)))
+		historicalContext = a.retriever.BuildContextForPlanner(
+			question,
+			string(analysis.Domain),
+			tools,
+			complexity,
+		)
+
+		if historicalContext != "" {
+			logger.Debug("获取到历史相似问题",
+				zap.Int("context_length", len(historicalContext)))
+		}
 	}
 
-	// Step 1: Generate plan using Planner (can use perception info and retrieved context)
+	// Step 2: Generate plan using custom Planner
 	plan, err := a.planner.Plan(ctx, question)
 	if err != nil {
-		logger.Error("生成计划失败", zap.Error(err))
-		return nil, fmt.Errorf("failed to generate plan: %w", err)
+		logger.Error("计划生成失败", zap.Error(err))
+		return nil, fmt.Errorf("计划生成失败: %w", err)
 	}
-
-	logger.Info("计划生成成功",
-		zap.Int("total_steps", plan.TotalSteps),
-		zap.String("plan_id", plan.ID))
 
 	// Store plan in memory
-	a.shortTermMem.AddPlan(plan)
+	a.shortTermMem.AddPlan(&models.Plan{
+		ID:         plan.ID,
+		QuestionID: plan.QuestionID,
+		Steps:      convertSteps(plan.Steps),
+		TotalSteps: len(plan.Steps),
+	})
 
-	// Step 2: Execute the plan using Executor
-	stepResults, err := a.executePlanWithMemory(ctx, plan)
-	if err != nil {
-		logger.Error("执行计划失败", zap.Error(err))
-		return nil, fmt.Errorf("failed to execute plan: %w", err)
-	}
-
-	// Store step results in memory
-	for _, result := range stepResults {
-		a.shortTermMem.AddStepResult(result)
-	}
-
-	// Step 3: Evaluate results using Replanner and iterate if needed
-	var finalResult *models.FinalResult
-	for iteration := 0; iteration < a.cfg.Agent.MaxIterations; iteration++ {
-		logger.Debug("开始重规划迭代",
-			zap.Int("iteration", iteration),
-			zap.Int("completed_steps", len(stepResults)))
-
-		// Check if we need to replan
-		newPlan, err := a.replanner.Replan(ctx, plan, stepResults, question)
-		if err != nil {
-			logger.Error("重规划失败", zap.Error(err))
-			return nil, fmt.Errorf("failed to replan: %w", err)
-		}
-
-		// If no replanning needed and plan is complete, finish
-		if newPlan == nil && isPlanComplete(stepResults, plan) {
-			finalResult = buildFinalResult(question, stepResults)
-			logger.Info("计划执行完成，无需重规划")
-			break
-		}
-
-		// If we need to replan, update the plan
-		if newPlan != nil {
-			plan = newPlan
-			logger.Info("执行重规划",
-				zap.Int("new_plan_steps", len(plan.Steps)))
-
-			// Store updated plan
-			a.shortTermMem.AddPlan(plan)
-
-			stepResults, err = a.executePlanWithMemory(ctx, plan)
-			if err != nil {
-				logger.Error("执行重规划步骤失败", zap.Error(err))
-				return nil, fmt.Errorf("failed to execute replanned steps: %w", err)
-			}
-
-			// Store new step results
-			for _, result := range stepResults {
-				a.shortTermMem.AddStepResult(result)
-			}
-		}
-	}
-
-	// If we exited the loop without a result, use what we have
-	if finalResult == nil {
-		finalResult = buildFinalResult(question, stepResults)
-		logger.Warn("达到最大迭代次数，使用当前结果")
-	}
-
-	// Store answer in memory
-	a.shortTermMem.AddAnswer(finalResult.Answer, finalResult.Confidence)
-
-	// Feedback layer - validate and classify the result
-	feedbackRecord := a.feedback.Process(
-		generateSessionID(),
-		question,
-		finalResult.Answer,
-		stepResults,
-	)
-
-	logger.Info("反馈处理完成",
-		zap.Bool("is_acceptable", feedbackRecord.IsAcceptable),
-		zap.Float64("final_confidence", feedbackRecord.FinalConfidence),
-		zap.Int("issues_count", len(feedbackRecord.ValidateResult.Issues)))
-
-	// Log session statistics
-	stats := a.shortTermMem.GetStatistics()
-	logger.Info("问题处理完成",
-		zap.Float64("duration_seconds", time.Since(startTime).Seconds()),
-		zap.Float64("confidence", finalResult.Confidence),
-		zap.Bool("is_correct", finalResult.IsCorrect),
-		zap.Int("total_steps", stats.TotalSteps),
-		zap.Float64("avg_confidence", stats.AvgConfidence))
-	duration := time.Since(startTime).Seconds()
-	result := &AnswerResult{
-		Answer:        finalResult.Answer,
-		Explanation:   finalResult.Explanation,
-		Confidence:    finalResult.Confidence,
-		TotalDuration: duration,
-		Steps:         stepResults,
-	}
-
-	logger.Info("问题处理完成",
-		zap.Float64("duration_seconds", duration),
-		zap.Float64("confidence", finalResult.Confidence),
-		zap.Bool("is_correct", finalResult.IsCorrect),
-		zap.Int("total_steps", len(stepResults)))
-
-	return result, nil
-}
-
-// executePlan executes the plan and returns step results
-func (a *HLEAgent) executePlan(ctx context.Context, plan *models.Plan) ([]*models.StepResult, error) {
-	logger := a.logger.With(
-		zap.String("action", "executePlan"),
+	logger.Info("计划生成成功",
 		zap.String("plan_id", plan.ID),
-		zap.Int("total_steps", plan.TotalSteps),
-	)
+		zap.Int("total_steps", len(plan.Steps)))
 
-	results := make([]*models.StepResult, 0)
+	// Execute plan steps using custom Executor
+	stepResults := make([]*HLEStepResult, 0, len(plan.Steps))
+	maxIterations := a.cfg.Agent.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 10
+	}
 
-	for _, step := range plan.Steps {
-		// Skip already completed steps
-		if step.ID <= len(results) {
-			continue
-		}
+	var finalAnswer string
+	var finalConfidence float64
 
-		logger.Debug("执行步骤",
-			zap.Int("step_id", step.ID),
-			zap.String("description", step.Description),
-			zap.String("action", step.Action),
-			zap.String("tool", step.ToolName))
+	for i := 0; i < len(plan.Steps) && i < maxIterations; i++ {
+		step := &plan.Steps[i]
 
-		// Execute the step
-		result, err := a.executor.Execute(ctx, &step, map[string]interface{}{
-			"question":   plan.QuestionID,
-			"plan_steps": len(plan.Steps),
-		})
+		logger.Info("开始执行步骤",
+			zap.Int("step_index", i+1),
+			zap.Int("total_steps", len(plan.Steps)),
+			zap.String("step_description", step.Description))
+
+		// Execute step
+		stepResult, err := a.executor.Execute(ctx, plan, step)
 		if err != nil {
-			logger.Error("步骤执行失败",
-				zap.Int("step_id", step.ID),
-				zap.Error(err))
-			return nil, fmt.Errorf("step %d execution failed: %w", step.ID, err)
+			logger.Error("步骤执行出错", zap.Error(err))
+			stepResult = &HLEStepResult{
+				StepID:     step.ID,
+				Success:    false,
+				Error:      err.Error(),
+				Output:     "",
+				Confidence: 0.0,
+			}
 		}
 
-		results = append(results, result)
+		stepResults = append(stepResults, stepResult)
 
-		logger.Debug("步骤执行完成",
-			zap.Int("step_id", step.ID),
-			zap.Bool("success", result.Success),
-			zap.Float64("confidence", result.Confidence),
-			zap.Float64("duration_seconds", result.Duration))
+		// Store step result in memory
+		stepID, _ := strconv.Atoi(step.ID)
+		a.shortTermMem.AddStepResult(&models.StepResult{
+			StepID:     stepID,
+			Success:    stepResult.Success,
+			Output:     stepResult.Output,
+			Confidence: stepResult.Confidence,
+			Timestamp:  time.Now().Format(time.RFC3339),
+		})
 
-		// Check for critical failure
-		if !result.Success && step.IsKeyPoint {
-			logger.Warn("关键步骤执行失败",
-				zap.Int("step_id", step.ID),
-				zap.String("description", step.Description))
-			break
+		// Check if this is the final step and generate answer
+		if i == len(plan.Steps)-1 || i == maxIterations-1 {
+			finalAnswer = stepResult.Output
+			finalConfidence = stepResult.Confidence
 		}
-	}
 
-	return results, nil
-}
+		// Check if replanning is needed
+		if i < len(plan.Steps)-1 {
+			analysis := a.replanner.analyzeStepResults(stepResults)
+			if analysis.NeedReplan {
+				logger.Info("触发重新规划",
+					zap.Float64("avg_confidence", analysis.AvgConfidence))
 
-// executePlanWithMemory executes the plan and stores results in memory
-func (a *HLEAgent) executePlanWithMemory(ctx context.Context, plan *models.Plan) ([]*models.StepResult, error) {
-	results, err := a.executePlan(ctx, plan)
-	if err != nil {
-		return nil, err
-	}
-
-	// Store reasoning from step results
-	for _, result := range results {
-		if result.Success && result.Output != nil {
-			if output, ok := result.Output.(map[string]interface{}); ok {
-				if reasoning, ok := output["reasoning"].(string); ok {
-					a.shortTermMem.AddReasoning(reasoning, result.Confidence)
+				// Replan
+				newPlan, err := a.replanner.Replan(ctx, plan, stepResults, question)
+				if err != nil {
+					logger.Error("重新规划失败", zap.Error(err))
+				} else if newPlan != nil {
+					plan = newPlan
+					logger.Info("新计划生成成功",
+						zap.String("new_plan_id", plan.ID),
+						zap.Int("new_total_steps", len(plan.Steps)))
 				}
 			}
 		}
 	}
 
-	return results, nil
+	// Generate final answer using reasoning if available
+	allStepResults := a.shortTermMem.GetStepResults()
+	if len(allStepResults) > 0 {
+		var reasoningParts []string
+		for _, sr := range allStepResults {
+			if sr.Output != nil {
+				reasoningParts = append(reasoningParts, fmt.Sprintf("步骤 %d: %v", sr.StepID, sr.Output))
+			}
+		}
+		if len(reasoningParts) > 0 {
+			combinedReasoning := strings.Join(reasoningParts, "\n\n")
+			// Use LLM to synthesize final answer
+			synthesizedAnswer, err := a.synthesizeAnswer(ctx, question, finalAnswer, combinedReasoning)
+			if err == nil {
+				finalAnswer = synthesizedAnswer
+			}
+		}
+	}
+
+	// Store answer in memory
+	a.shortTermMem.AddAnswer(finalAnswer, finalConfidence)
+
+	// Process feedback
+	questionID := generateQuestionID()
+	feedbackRecord := a.feedback.Process(
+		questionID,
+		question,
+		finalAnswer,
+		allStepResults,
+	)
+
+	// Get explanation from feedback
+	explanation := ""
+	if feedbackRecord != nil && feedbackRecord.ValidateResult != nil {
+		if msg, ok := feedbackRecord.ValidateResult.Details["message"].(string); ok {
+			explanation = msg
+		} else if len(feedbackRecord.ValidateResult.Issues) > 0 {
+			// Build message from issues
+			var issueMessages []string
+			for _, issue := range feedbackRecord.ValidateResult.Issues {
+				issueMessages = append(issueMessages, issue.Message)
+			}
+			explanation = strings.Join(issueMessages, "; ")
+		}
+	}
+
+	logger.Info("问题处理完成",
+		zap.String("answer_preview", utils.TruncateString(finalAnswer, 100)),
+		zap.Float64("confidence", finalConfidence))
+
+	duration := time.Since(startTime).Seconds()
+
+	// Convert step results to models.StepResult
+	modelStepResults := make([]*models.StepResult, len(stepResults))
+	for i, sr := range stepResults {
+		stepID, _ := strconv.Atoi(sr.StepID)
+		modelStepResults[i] = &models.StepResult{
+			StepID:     stepID,
+			Success:    sr.Success,
+			Output:     sr.Output,
+			Confidence: sr.Confidence,
+			Timestamp:  time.Now().Format(time.RFC3339),
+		}
+	}
+
+	return &AnswerResult{
+		Answer:        finalAnswer,
+		Explanation:   explanation,
+		Confidence:    finalConfidence,
+		TotalDuration: duration,
+		Steps:         modelStepResults,
+	}, nil
+}
+
+// synthesizeAnswer uses LLM to synthesize a final answer from reasoning trace
+func (a *HLEAgent) synthesizeAnswer(ctx context.Context, question, answer, reasoning string) (string, error) {
+	prompt := fmt.Sprintf(`基于以下推理过程，请给出最终答案：
+
+问题: %s
+
+推理过程:
+%s
+
+初步答案:
+%s
+
+请综合推理过程，给出最终答案。如果推理过程已经完整且正确，请直接返回初步答案。如果需要修正，请给出修正后的答案。`, question, reasoning, answer)
+
+	return a.llmClient.GenerateWithSystemPrompt(ctx,
+		"你是一个专业的学术解题专家。请综合推理过程给出最终答案。",
+		prompt)
 }
 
 // ProcessBatch processes multiple questions
@@ -346,39 +401,34 @@ func (a *HLEAgent) ProcessBatch(ctx context.Context, questions []string) ([]*Ans
 	results := make([]*AnswerResult, 0, len(questions))
 
 	for i, question := range questions {
-		logger.Debug("处理问题",
-			zap.Int("index", i+1),
-			zap.Int("total", len(questions)))
+		logger.Info("处理问题",
+			zap.Int("current", i+1),
+			zap.Int("total", len(questions)),
+			zap.String("preview", utils.TruncateString(question, 50)))
 
 		result, err := a.Process(ctx, question)
 		if err != nil {
-			logger.Error("处理问题失败",
-				zap.Int("index", i+1),
+			logger.Error("问题处理失败",
+				zap.Int("index", i),
 				zap.Error(err))
-			return nil, fmt.Errorf("failed to process question at index %d: %w", i, err)
+
+			// Add failed result
+			results = append(results, &AnswerResult{
+				Answer:     "",
+				Confidence: 0,
+				Steps:      []*models.StepResult{},
+			})
+			continue
 		}
+
 		results = append(results, result)
 	}
 
 	logger.Info("批量处理完成",
-		zap.Int("total_processed", len(results)),
-		zap.Float64("success_rate", float64(len(results))/float64(len(questions))))
+		zap.Int("total", len(questions)),
+		zap.Int("success", len(results)))
 
 	return results, nil
-}
-
-// RegisterTool registers a tool with the agent
-func (a *HLEAgent) RegisterTool(tool Tool) {
-	a.logger.Info("注册工具",
-		zap.String("tool_name", tool.Name()),
-		zap.String("tool_description", tool.Description()))
-
-	a.toolRegistry.Register(tool)
-}
-
-// GetConfig returns the agent configuration
-func (a *HLEAgent) GetConfig() *config.Config {
-	return a.cfg
 }
 
 // AnswerResult represents the result of answering a question
@@ -390,88 +440,27 @@ type AnswerResult struct {
 	Steps         []*models.StepResult `json:"steps"`
 }
 
-// isPlanComplete checks if the plan execution is complete
-func isPlanComplete(results []*models.StepResult, plan *models.Plan) bool {
-	return len(results) >= plan.TotalSteps
-}
-
-// buildFinalResult builds the final result from step results
-func buildFinalResult(question string, stepResults []*models.StepResult) *models.FinalResult {
-	// Calculate average confidence
-	var totalConf float64
-	for _, result := range stepResults {
-		totalConf += result.Confidence
-	}
-	avgConf := float64(0)
-	if len(stepResults) > 0 {
-		avgConf = totalConf / float64(len(stepResults))
-	}
-
-	// Extract answer from the last successful step
-	answer := "No answer generated"
-	for i := len(stepResults) - 1; i >= 0; i-- {
-		if stepResults[i].Success && stepResults[i].Output != nil {
-			if output, ok := stepResults[i].Output.(map[string]interface{}); ok {
-				if conclusion, ok := output["conclusion"].(string); ok {
-					answer = conclusion
-				}
-			}
-			break
-		}
-	}
-
-	return &models.FinalResult{
-		QuestionID:    generateQuestionID(question),
-		Answer:        answer,
-		Explanation:   generateExplanation(stepResults),
-		Confidence:    avgConf,
-		Steps:         stepResults,
-		TotalDuration: calculateTotalDuration(stepResults),
-		IsCorrect:     avgConf > 0.7,
-	}
-}
-
-// generateQuestionID generates a unique ID for the question
-func generateQuestionID(question string) string {
-	return fmt.Sprintf("q_%d", time.Now().UnixNano()%1000000)
-}
-
-// generateExplanation generates an explanation from step results
-func generateExplanation(results []*models.StepResult) string {
-	var sb strings.Builder
-	sb.WriteString("解题过程：\n")
-	for i, result := range results {
-		sb.WriteString(fmt.Sprintf("%d. Step %d\n", i+1, result.StepID))
-		if result.Success {
-			sb.WriteString(fmt.Sprintf("   ✓ 成功 (置信度: %.0f%%)\n", result.Confidence*100))
-		} else {
-			sb.WriteString(fmt.Sprintf("   ✗ 失败: %s\n", result.Error))
-		}
-	}
-	return sb.String()
-}
-
-// calculateTotalDuration calculates total duration from step results
-func calculateTotalDuration(results []*models.StepResult) float64 {
-	var total float64
-	for _, result := range results {
-		total += result.Duration
-	}
-	return total
-}
-
-// generateSessionID generates a unique session ID
+// Helper functions
 func generateSessionID() string {
-	return fmt.Sprintf("session_%d", time.Now().UnixNano()%1000000)
+	return fmt.Sprintf("session_%d", time.Now().UnixNano())
 }
 
-// GetMemory returns the short-term memory instance
-func (a *HLEAgent) GetMemory() *memory.ShortTermMemory {
-	return a.shortTermMem
+func generateQuestionID() string {
+	return fmt.Sprintf("q_%d", time.Now().UnixNano())
 }
 
-// ClearMemory clears the short-term memory
-func (a *HLEAgent) ClearMemory() {
-	a.shortTermMem.Clear()
-	a.shortTermMem.StartSession(generateSessionID())
+// convertSteps converts HLEStep to models.Step
+func convertSteps(einoSteps []HLEStep) []models.Step {
+	steps := make([]models.Step, len(einoSteps))
+	for i, s := range einoSteps {
+		// Convert string ID to int
+		stepID, _ := strconv.Atoi(s.ID)
+		steps[i] = models.Step{
+			ID:          stepID,
+			Description: s.Description,
+			Action:      s.Action,
+			ToolName:    s.ToolName,
+		}
+	}
+	return steps
 }

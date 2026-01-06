@@ -3,15 +3,15 @@
 app:
   name: "HLE-Agent"
   version: "1.0.0"
-  log_level: "info"
+  log_level: "debug"
 
 # LLM Configuration
 # 支持多种 OpenAI 兼容的 API 提供商
 model:
   provider: "openai"  # openai, anthropic, deepseek, oneapi, custom
-  api_key: "${OPENAI_API_KEY}"  # 请替换为你的 API Key
-  model: "gpt-4"  # 模型名称，根据你的 API 提供商设置
-  base_url: "https://api.openai.com/v1"  # API 基础地址
+  api_key: "sk-api-ORpmGAVbyUtWl6j-oE5Xv60xIy596Vqnu509ezB-drgkL0oxujYiEDLVgw_7IUifaWmpYPAUoiRpqNOvez-kBaaSi4ZgDBqKoboetKMVj8Kb26rrZdzsYDU"
+  model: "MiniMax-M2.1"  # 模型名称，根据你的 API 提供商设置
+  base_url: "https://api.minimaxi.com/v1"  # API 基础地址
   temperature: 0.0
   max_tokens: 4096
   timeout: 60
