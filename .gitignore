@@ -54,7 +54,7 @@ temp/
 .env
 .env.local
 .env.*.local
-
+config.yaml
 # Configuration files with secrets (optional, uncomment if needed)
 # config.yaml
 # config*.yaml
