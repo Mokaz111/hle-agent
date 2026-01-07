@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite"
 )
 
 // SQLiteStore SQLite 存储实现
@@ -30,7 +30,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("创建目录失败: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1")
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_foreign_keys=1")
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -154,7 +154,7 @@ func (s *SQLiteStore) SaveChain(ctx context.Context, chain *ChainOfThought) erro
 func (s *SQLiteStore) RetrieveSimilar(ctx context.Context, question string, domain string, maxResults int, config *KnowledgeBaseConfig) ([]*ChainOfThought, error) {
 	// 查询所有思维链
 	query := "SELECT id, question, question_id, domain, complexity, keywords, model, reasoning, answer, confidence, metadata, created_at, updated_at FROM chains"
-	
+
 	// 如果指定了领域，添加过滤
 	args := []interface{}{}
 	if domain != "" {
@@ -338,20 +338,20 @@ func extractKeywords(question string) []string {
 	// 移除标点符号
 	question = strings.ToLower(question)
 	words := strings.Fields(question)
-	
+
 	// 过滤停用词（简化版）
 	stopWords := map[string]bool{
 		"的": true, "是": true, "在": true, "有": true, "和": true,
 		"the": true, "is": true, "a": true, "an": true, "and": true,
 	}
-	
+
 	keywords := make([]string, 0)
 	for _, word := range words {
 		if !stopWords[word] && len(word) > 1 {
 			keywords = append(keywords, word)
 		}
 	}
-	
+
 	return keywords
 }
 
@@ -385,4 +385,3 @@ func calculateKeywordSimilarity(keywords1, keywords2 []string) float64 {
 
 	return float64(intersection) / float64(union)
 }
-

@@ -14,8 +14,8 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建应用
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o hle-agent ./cmd/agent/main.go
+# 构建应用（使用纯 Go SQLite，无需 CGO）
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o hle-agent ./cmd/agent/main.go
 
 # 运行阶段
 FROM alpine:latest
