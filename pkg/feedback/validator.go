@@ -90,6 +90,7 @@ const (
 )
 
 // Validate validates an answer and returns the validation result
+// answer 参数应该是已经提取后的纯答案（不包含 Explanation 和 Confidence）
 func (v *Validator) Validate(question string, answer string, stepResults []*models.StepResult) *ValidateResult {
 	result := &ValidateResult{
 		IsValid:    true,
@@ -113,6 +114,16 @@ func (v *Validator) Validate(question string, answer string, stepResults []*mode
 			Type:    IssueFormat,
 			Severity: SeverityWarning,
 			Message: "答案过长，可能包含冗余信息",
+			Field:   "answer",
+		})
+	}
+
+	// 检查答案是否包含格式化标记（说明可能没有正确提取）
+	if strings.Contains(answer, "Explanation:") || strings.Contains(answer, "Answer:") || strings.Contains(answer, "Confidence:") {
+		result.Issues = append(result.Issues, ValidationIssue{
+			Type:    IssueFormat,
+			Severity: SeverityWarning,
+			Message: "答案可能包含格式化标记，建议检查答案提取逻辑",
 			Field:   "answer",
 		})
 	}

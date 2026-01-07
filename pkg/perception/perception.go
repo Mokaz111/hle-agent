@@ -15,6 +15,11 @@ type Perception struct {
 	history   []*QuestionInfo
 }
 
+// GetRecognizer 返回 Recognizer 实例（用于设置LLM识别器）
+func (p *Perception) GetRecognizer() *Recognizer {
+	return p.recognizer
+}
+
 // NewPerception creates a new Perception instance
 func NewPerception() *Perception {
 	return &Perception{

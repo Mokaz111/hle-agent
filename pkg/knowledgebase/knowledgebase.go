@@ -100,6 +100,9 @@ func NewKnowledgeBase(cfg *KnowledgeBaseConfig) (KnowledgeBase, error) {
 		return nil, fmt.Errorf("创建存储失败: %w", err)
 	}
 
+	// 设置 store 的 logger
+	store.SetLogger(logger)
+
 	kb := &knowledgeBaseImpl{
 		logger: logger,
 		config: cfg,

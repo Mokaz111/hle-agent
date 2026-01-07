@@ -11,13 +11,16 @@ import (
 type Domain string
 
 const (
-	DomainCryptography   Domain = "cryptography"   // 密码学
-	DomainProgramming    Domain = "programming"    // 编程
-	DomainCalculation    Domain = "calculation"    // 数学计算
-	DomainRobotics       Domain = "robotics"       // 机器人学
-	DomainMachineLearning Domain = "machine_learning" // 机器学习/AI
-	DomainGeneral        Domain = "general"        // 通用
-	DomainUnknown        Domain = "unknown"        // 未知
+	DomainCryptography        Domain = "cryptography"         // 密码学
+	DomainCybersecurity      Domain = "cybersecurity"        // 网络安全
+	DomainProgramming         Domain = "programming"         // 编程
+	DomainCalculation         Domain = "calculation"         // 数学计算
+	DomainRobotics            Domain = "robotics"            // 机器人学
+	DomainMachineLearning     Domain = "machine_learning"     // 机器学习
+	DomainArtificialIntelligence Domain = "artificial_intelligence" // 人工智能
+	DomainDataScience         Domain = "data_science"         // 数据科学
+	DomainGeneral             Domain = "general"              // 通用
+	DomainUnknown             Domain = "unknown"              // 未知
 )
 
 // QuestionInfo represents parsed question information

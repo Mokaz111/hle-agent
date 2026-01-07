@@ -22,6 +22,11 @@ type SQLiteStore struct {
 	logger *zap.Logger
 }
 
+// SetLogger 设置 logger
+func (s *SQLiteStore) SetLogger(logger *zap.Logger) {
+	s.logger = logger
+}
+
 // NewSQLiteStore 创建 SQLite 存储
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	// 确保目录存在
@@ -155,10 +160,12 @@ func (s *SQLiteStore) RetrieveSimilar(ctx context.Context, question string, doma
 	// 查询所有思维链
 	query := "SELECT id, question, question_id, domain, complexity, keywords, model, reasoning, answer, confidence, metadata, created_at, updated_at FROM chains"
 
-	// 如果指定了领域，添加过滤
+	// 如果指定了领域且不是 "unknown" 或 "general"，添加过滤
+	// 对于 "unknown" 或 "general"，不进行领域过滤，允许检索所有领域的思维链
+	// 注意：使用 LOWER() 进行不区分大小写的匹配
 	args := []interface{}{}
-	if domain != "" {
-		query += " WHERE domain = ?"
+	if domain != "" && domain != "unknown" && domain != "general" {
+		query += " WHERE LOWER(domain) = LOWER(?)"
 		args = append(args, domain)
 	}
 
@@ -184,6 +191,16 @@ func (s *SQLiteStore) RetrieveSimilar(ctx context.Context, question string, doma
 
 		// 计算相似度
 		similarity := s.calculateSimilarity(question, domain, chain, config)
+
+		// 记录相似度计算详情（用于调试）
+		s.logger.Debug("计算思维链相似度",
+			zap.String("chain_id", chain.ID),
+			zap.String("chain_domain", chain.Domain),
+			zap.String("query_domain", domain),
+			zap.Float64("similarity", similarity),
+			zap.Float64("min_similarity", config.MinSimilarity),
+			zap.Bool("passed", similarity >= config.MinSimilarity))
+
 		if similarity >= config.MinSimilarity {
 			scoredChains = append(scoredChains, scoredChain{
 				chain:      chain,
@@ -287,12 +304,20 @@ func (s *SQLiteStore) calculateSimilarity(question string, domain string, chain 
 	}
 
 	// 领域相似度
-	if domain != "" && chain.Domain != "" {
-		if domain == chain.Domain {
+	// 如果查询领域是 "unknown" 或 "general"，不进行领域匹配（不扣分也不加分）
+	// 否则，如果领域匹配，给予加分
+	// 注意：使用不区分大小写的比较
+	if domain != "" && domain != "unknown" && domain != "general" && chain.Domain != "" {
+		domainLower := strings.ToLower(domain)
+		chainDomainLower := strings.ToLower(chain.Domain)
+
+		if domainLower == chainDomainLower {
 			similarity += config.WeightDomain
-		} else if strings.Contains(chain.Domain, strings.Split(domain, "_")[0]) {
+		} else if strings.Contains(chainDomainLower, strings.Split(domainLower, "_")[0]) {
+			// 部分匹配（例如 "machine_learning" 和 "machine learning"）
 			similarity += config.WeightDomain * 0.5
 		}
+		// 领域不匹配时不扣分，只依赖关键词相似度
 	}
 
 	// 复杂度相似度
@@ -310,10 +335,15 @@ func (s *SQLiteStore) calculateSimilarity(question string, domain string, chain 
 		}
 	}
 
-	// 归一化
-	maxWeight := config.WeightKeywords + config.WeightDomain + config.WeightComplexity
-	if maxWeight > 0 {
-		similarity = similarity / maxWeight
+	// 归一化：根据实际使用的权重进行归一化
+	// 如果领域是 "unknown" 或 "general"，领域权重不参与计算
+	actualMaxWeight := config.WeightKeywords + config.WeightComplexity
+	if domain != "" && domain != "unknown" && domain != "general" {
+		actualMaxWeight += config.WeightDomain
+	}
+
+	if actualMaxWeight > 0 {
+		similarity = similarity / actualMaxWeight
 	}
 
 	return similarity

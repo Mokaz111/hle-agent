@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
@@ -10,24 +11,26 @@ import (
 
 // Recognizer recognizes the domain/category of a question
 type Recognizer struct {
-	logger       *zap.Logger
-	domainRules  []DomainRule
+	logger        *zap.Logger
+	domainRules   []DomainRule
 	regexPatterns map[string]*regexp.Regexp
+	llmRecognizer *LLMRecognizer // LLM辅助识别器（可选）
+	useLLM        bool           // 是否使用LLM辅助识别
 }
 
 // DomainRule defines a rule for domain recognition
 type DomainRule struct {
-	Domain      Domain
-	Patterns    []string
-	Weight      float64
-	Required    bool
+	Domain   Domain
+	Patterns []string
+	Weight   float64
+	Required bool
 }
 
 // NewRecognizer creates a new Recognizer
 func NewRecognizer() *Recognizer {
 	r := &Recognizer{
-		logger:       logging.WithComponent("Recognizer"),
-		domainRules:  make([]DomainRule, 0),
+		logger:        logging.WithComponent("Recognizer"),
+		domainRules:   make([]DomainRule, 0),
 		regexPatterns: make(map[string]*regexp.Regexp),
 	}
 
@@ -38,10 +41,29 @@ func NewRecognizer() *Recognizer {
 	return r
 }
 
+// SetLLMRecognizer 设置LLM识别器（启用LLM辅助识别）
+func (r *Recognizer) SetLLMRecognizer(llmRecognizer *LLMRecognizer) {
+	r.llmRecognizer = llmRecognizer
+	r.useLLM = llmRecognizer != nil
+}
+
 // initDomainRules initializes the domain recognition rules
 func (r *Recognizer) initDomainRules() {
 	r.domainRules = []DomainRule{
-		// Cryptography domain - highest priority for specific keywords
+		// Cybersecurity domain - highest priority for security-related keywords
+		{
+			Domain: DomainCybersecurity,
+			Patterns: []string{
+				`cybersecurity`, `security`, `vulnerability`, `attack`, `defense`,
+				`网络安全`, `安全`, `漏洞`, `攻击`, `防御`,
+				`biometric`, `authentication`, `encryption`, `firewall`,
+				`生物识别`, `认证`, `防火墙`, `入侵检测`,
+				`shamir`, `secret sharing`, `secret_sharing`, `密钥分享`,
+			},
+			Weight:   2.5,
+			Required: false,
+		},
+		// Cryptography domain - for pure cryptography questions
 		{
 			Domain: DomainCryptography,
 			Patterns: []string{
@@ -73,6 +95,31 @@ func (r *Recognizer) initDomainRules() {
 				`loss`, `accuracy`, `分类`, `回归`,
 				`classification`, `regression`, `clustering`,
 				`神经网络`, `深度学习`, `激活函数`,
+				`matrix rank`, `rank of`, `relu`, `mlp`,
+			},
+			Weight:   2.0,
+			Required: true,
+		},
+		// Artificial Intelligence domain
+		{
+			Domain: DomainArtificialIntelligence,
+			Patterns: []string{
+				`artificial intelligence`, `ai`, `watermark`,
+				`watermarking`, `statistical`, `beta distribution`,
+				`digamma`, `lower bound`, `期望`, `统计`,
+				`人工智能`, `水印`, `统计量`, `下界`,
+			},
+			Weight:   2.0,
+			Required: true,
+		},
+		// Data Science domain
+		{
+			Domain: DomainDataScience,
+			Patterns: []string{
+				`data science`, `embedding`, `linear separability`,
+				`heuristic`, `representation`, `linear classifier`,
+				`xor`, `nonlinear`, `特征`, `嵌入`,
+				`数据科学`, `线性可分`, `分类器`, `启发式`,
 			},
 			Weight:   2.0,
 			Required: true,
@@ -109,11 +156,11 @@ func (r *Recognizer) initDomainRules() {
 func (r *Recognizer) initRegexPatterns() {
 	patterns := map[string]string{
 		// Code block patterns
-		"python_code":   `(?i)(def |class |import |from\s+\w+\s+import)`,
+		"python_code":     `(?i)(def |class |import |from\s+\w+\s+import)`,
 		"math_expression": `(?i)(\d+\s*[\+\-\*/\^]\s*\d+|sqrt\(|integral\(|sum\()`,
-		"matrix":        `(?i)(\[\s*\[\s*\d+.*\d+\s*\]\s*\]|矩阵)`,
-		"equation":      `(?i)(=\s*\w+\s*\(|方程|equation)`,
-		"cipher_text":   `(?i)([A-Z]{2,}\s*){5,}|密文|ciphertext`,
+		"matrix":          `(?i)(\[\s*\[\s*\d+.*\d+\s*\]\s*\]|矩阵)`,
+		"equation":        `(?i)(=\s*\w+\s*\(|方程|equation)`,
+		"cipher_text":     `(?i)([A-Z]{2,}\s*){5,}|密文|ciphertext`,
 	}
 
 	for name, pattern := range patterns {
@@ -127,9 +174,9 @@ func (r *Recognizer) initRegexPatterns() {
 func (r *Recognizer) Recognize(question string) *DomainRecognition {
 	recognition := &DomainRecognition{
 		QuestionInfo: &QuestionInfo{
-			Domain:     DomainUnknown,
-			Keywords:   make([]string, 0),
-			Metadata:   make(map[string]interface{}),
+			Domain:   DomainUnknown,
+			Keywords: make([]string, 0),
+			Metadata: make(map[string]interface{}),
 		},
 		Scores: make(map[Domain]float64),
 	}
@@ -153,11 +200,47 @@ func (r *Recognizer) Recognize(question string) *DomainRecognition {
 
 	// Determine primary domain
 	recognition.PrimaryDomain = r.determinePrimaryDomain(recognition.Scores)
+	keywordConfidence := 0.0
+	if recognition.PrimaryDomain != DomainUnknown {
+		keywordConfidence = recognition.Scores[recognition.PrimaryDomain]
+	}
+
+	// 如果关键词匹配置信度较低，或者未识别到领域，使用LLM辅助识别
+	if r.useLLM && r.llmRecognizer != nil {
+		// 如果关键词匹配置信度低于阈值，或者未识别到领域，使用LLM
+		useLLM := keywordConfidence < 0.6 || recognition.PrimaryDomain == DomainUnknown
+
+		if useLLM {
+			ctx := context.Background()
+			llmDomain, llmConfidence, err := r.llmRecognizer.RecognizeWithLLM(ctx, question)
+			if err == nil && llmDomain != DomainUnknown {
+				// 如果LLM识别成功，使用LLM的结果
+				// 如果关键词匹配也有结果，取置信度更高的
+				if keywordConfidence < llmConfidence {
+					recognition.PrimaryDomain = llmDomain
+					recognition.Confidence = llmConfidence
+					r.logger.Debug("使用LLM识别结果",
+						zap.String("llm_domain", string(llmDomain)),
+						zap.Float64("llm_confidence", llmConfidence),
+						zap.Float64("keyword_confidence", keywordConfidence))
+				} else {
+					// 关键词匹配置信度更高，但可以记录LLM的结果作为参考
+					r.logger.Debug("关键词匹配置信度更高，保留关键词结果",
+						zap.String("keyword_domain", string(recognition.PrimaryDomain)),
+						zap.Float64("keyword_confidence", keywordConfidence),
+						zap.String("llm_domain", string(llmDomain)),
+						zap.Float64("llm_confidence", llmConfidence))
+				}
+			}
+		}
+	}
 
 	// Set domain
 	if recognition.PrimaryDomain != DomainUnknown {
 		recognition.QuestionInfo.Domain = recognition.PrimaryDomain
-		recognition.Confidence = recognition.Scores[recognition.PrimaryDomain]
+		if recognition.Confidence == 0 {
+			recognition.Confidence = keywordConfidence
+		}
 	}
 
 	// Set sub-domain if applicable
@@ -166,7 +249,8 @@ func (r *Recognizer) Recognize(question string) *DomainRecognition {
 	r.logger.Debug("领域识别完成",
 		zap.String("primary_domain", string(recognition.PrimaryDomain)),
 		zap.Float64("confidence", recognition.Confidence),
-		zap.Any("scores", recognition.Scores))
+		zap.Any("scores", recognition.Scores),
+		zap.Bool("used_llm", r.useLLM && r.llmRecognizer != nil))
 
 	return recognition
 }
@@ -174,9 +258,9 @@ func (r *Recognizer) Recognize(question string) *DomainRecognition {
 // DomainRecognition represents the result of domain recognition
 type DomainRecognition struct {
 	*QuestionInfo
-	PrimaryDomain Domain           `json:"primary_domain"`
+	PrimaryDomain Domain             `json:"primary_domain"`
 	Scores        map[Domain]float64 `json:"scores"`
-	Confidence    float64          `json:"confidence"`
+	Confidence    float64            `json:"confidence"`
 }
 
 // calculateScore calculates the score for a domain based on matched patterns
@@ -300,12 +384,13 @@ func (r *Recognizer) determineSubDomain(question string, domain Domain) string {
 // GetRecommendedTools returns recommended tools based on domain
 func (r *Recognizer) GetRecommendedTools(domain Domain) []string {
 	tools := map[Domain][]string{
-		DomainCryptography:   {"python_executor", "sage_math_executor"},
-		DomainProgramming:    {"python_executor"},
-		DomainCalculation:    {"sage_math_executor", "python_executor"},
-		DomainRobotics:       {"python_executor", "sage_math_executor"},
+		DomainCybersecurity:   {"python_executor", "sage_math_executor"},
+		DomainCryptography:    {"python_executor", "sage_math_executor"},
+		DomainProgramming:     {"python_executor"},
+		DomainCalculation:     {"sage_math_executor", "python_executor"},
+		DomainRobotics:        {"python_executor", "sage_math_executor"},
 		DomainMachineLearning: {"python_executor"},
-		DomainGeneral:        {"python_executor"},
+		DomainGeneral:         {"python_executor"},
 	}
 
 	if t, ok := tools[domain]; ok {
