@@ -15,6 +15,7 @@ import (
 
 	"github.com/hle-agent/hle-agent/internal/agent"
 	"github.com/hle-agent/hle-agent/internal/config"
+	"github.com/hle-agent/hle-agent/pkg/logging"
 )
 
 var (
@@ -37,8 +38,55 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Initialize logging
+	loggingConfig := &logging.Config{
+		Level:       cfg.Logging.Level,
+		OutputPath:  cfg.Logging.OutputPath,
+		Development: cfg.Logging.Development,
+		Rotation: logging.RotationConfig{
+			Enabled:    cfg.Logging.Rotation.Enabled,
+			MaxSize:    cfg.Logging.Rotation.MaxSize,
+			MaxBackups: cfg.Logging.Rotation.MaxBackups,
+			MaxAge:     cfg.Logging.Rotation.MaxAge,
+			Compress:   cfg.Logging.Rotation.Compress,
+			LocalTime:  cfg.Logging.Rotation.LocalTime,
+		},
+	}
+
+	// Set defaults if not configured
+	if loggingConfig.Level == "" {
+		loggingConfig.Level = cfg.App.LogLevel
+	}
+	if loggingConfig.Level == "" {
+		loggingConfig.Level = "info"
+	}
+	if loggingConfig.OutputPath == "" {
+		loggingConfig.OutputPath = "stdout"
+	}
+	if loggingConfig.Rotation.MaxSize == 0 {
+		loggingConfig.Rotation.MaxSize = 100 // 100 MB default
+	}
+	if loggingConfig.Rotation.MaxBackups == 0 {
+		loggingConfig.Rotation.MaxBackups = 10 // 10 backups default
+	}
+	if loggingConfig.Rotation.MaxAge == 0 {
+		loggingConfig.Rotation.MaxAge = 30 // 30 days default
+	}
+
+	if err := logging.Init(loggingConfig); err != nil {
+		log.Fatalf("Failed to initialize logging: %v", err)
+	}
+	defer logging.Sync()
+
 	fmt.Printf("Configuration loaded from: %s\n", *configFile)
 	fmt.Printf("Model: %s (%s)\n", cfg.Model.Model, cfg.Model.Provider)
+	fmt.Printf("Logging: %s -> %s\n", loggingConfig.Level, loggingConfig.OutputPath)
+	if loggingConfig.Rotation.Enabled {
+		fmt.Printf("Log rotation: enabled (max_size=%dMB, max_backups=%d, max_age=%ddays)\n",
+			loggingConfig.Rotation.MaxSize,
+			loggingConfig.Rotation.MaxBackups,
+			loggingConfig.Rotation.MaxAge)
+	}
 	fmt.Println()
 
 	// Create context with cancellation
@@ -81,7 +129,11 @@ func main() {
 
 func runInteractive(ctx context.Context, hleAgent *agent.HLEAgent) {
 	fmt.Println("Running in interactive mode...")
-	fmt.Println("Enter your question (or 'quit' to exit):")
+	fmt.Println("Enter your question (or 'quit'/'exit' to exit, empty line to submit):")
+	fmt.Println("(Tip: You can enter multi-line questions, press Enter twice to submit)")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	var questionLines []string
 
 	for {
 		select {
@@ -90,17 +142,41 @@ func runInteractive(ctx context.Context, hleAgent *agent.HLEAgent) {
 		default:
 			fmt.Print("\nQuestion: ")
 
-			var question string
-			fmt.Scanln(&question)
+			// Read input line by line until empty line
+			questionLines = questionLines[:0]
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
 
-			if question == "quit" || question == "exit" {
-				fmt.Println("Goodbye!")
+				// Empty line means submit
+				if line == "" && len(questionLines) > 0 {
+					break
+				}
+
+				// Check for quit commands
+				if line == "quit" || line == "exit" {
+					fmt.Println("Goodbye!")
+					return
+				}
+
+				if line != "" {
+					questionLines = append(questionLines, line)
+				} else if len(questionLines) == 0 {
+					// First empty line, continue waiting
+					fmt.Print("Question: ")
+					continue
+				}
+			}
+
+			if err := scanner.Err(); err != nil {
+				fmt.Printf("Error reading input: %v\n", err)
 				return
 			}
 
-			if question == "" {
+			if len(questionLines) == 0 {
 				continue
 			}
+
+			question := strings.Join(questionLines, "\n")
 
 			// Process the question
 			fmt.Println("\nProcessing...")
@@ -113,8 +189,14 @@ func runInteractive(ctx context.Context, hleAgent *agent.HLEAgent) {
 
 			// Output result
 			fmt.Printf("\nAnswer: %s\n", result.Answer)
+			if result.Explanation != "" {
+				fmt.Printf("Explanation: %s\n", result.Explanation)
+			}
 			fmt.Printf("Confidence: %.2f%%\n", result.Confidence*100)
 			fmt.Printf("Duration: %.2fs\n", result.TotalDuration)
+			if len(result.Steps) > 0 {
+				fmt.Printf("Steps executed: %d\n", len(result.Steps))
+			}
 		}
 	}
 }
@@ -177,6 +259,14 @@ func processBatch(ctx context.Context, hleAgent *agent.HLEAgent, inputFile, outp
 
 	// 处理每个问题
 	for i, q := range questions {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nProcessing cancelled by user")
+			return
+		default:
+		}
+
 		questionID, _ := q["id"].(string)
 		questionText, _ := q["question"].(string)
 		expectedAnswer, _ := q["answer"].(string)
@@ -201,6 +291,7 @@ func processBatch(ctx context.Context, hleAgent *agent.HLEAgent, inputFile, outp
 				"status":                  "error",
 				"error":                   err.Error(),
 				"expected":                expectedAnswer,
+				"question":                questionText,
 				"processing_time_seconds": time.Since(startTime).Seconds(),
 			}
 			recordJSON, err := json.Marshal(resultRecord)
@@ -232,7 +323,9 @@ func processBatch(ctx context.Context, hleAgent *agent.HLEAgent, inputFile, outp
 			resultRecord := map[string]interface{}{
 				"id":                      questionID,
 				"status":                  "success",
+				"question":                questionText,
 				"answer":                  result.Answer,
+				"explanation":             result.Explanation,
 				"confidence":              result.Confidence,
 				"duration":                result.TotalDuration,
 				"expected":                expectedAnswer,

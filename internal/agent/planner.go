@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 	"go.uber.org/zap"
 
+	"github.com/hle-agent/hle-agent/pkg/knowledgebase"
 	"github.com/hle-agent/hle-agent/pkg/llm"
 	"github.com/hle-agent/hle-agent/pkg/logging"
 	"github.com/hle-agent/hle-agent/pkg/perception"
@@ -87,23 +88,25 @@ type HLEStepResult struct {
 // Planner generates a plan for solving a question
 // Implements the factory-based pattern
 type Planner struct {
-	llmClient  *llm.Client
-	prompts    *prompts.PromptManager
-	retriever  *retriever.Retriever
-	perception *perception.Perception
-	logger     *zap.Logger
+	llmClient     *llm.Client
+	prompts       *prompts.PromptManager
+	retriever     *retriever.Retriever
+	knowledgeBase knowledgebase.KnowledgeBase // 知识库（可选）
+	perception    *perception.Perception
+	logger        *zap.Logger
 }
 
 // NewPlanner creates a new Planner instance
-func NewPlanner(llmClient *llm.Client, retriever *retriever.Retriever) *Planner {
+func NewPlanner(llmClient *llm.Client, retriever *retriever.Retriever, knowledgeBase knowledgebase.KnowledgeBase) *Planner {
 	logger := logging.WithComponent("Planner")
 
 	return &Planner{
-		llmClient:  llmClient,
-		prompts:    prompts.NewPromptManager(),
-		retriever:  retriever,
-		perception: perception.NewPerception(),
-		logger:     logger,
+		llmClient:     llmClient,
+		prompts:       prompts.NewPromptManager(),
+		retriever:     retriever,
+		knowledgeBase: knowledgeBase,
+		perception:    perception.NewPerception(),
+		logger:        logger,
 	}
 }
 
@@ -176,18 +179,24 @@ func (p *Planner) CreatePlan(ctx context.Context) planexecute.Plan {
 
 // extractQuestionFromContext 从上下文中提取题目信息
 func extractQuestionFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-
-	// 尝试从 context 值中提取题目
-	if question, ok := ctx.Value("question").(string); ok {
+	// 优先尝试从类型安全的 context key 获取
+	if question := GetQuestion(ctx); question != "" {
 		return question
 	}
 
-	// 尝试从 context 值中提取用户消息
-	if userMsg, ok := ctx.Value("user_message").(string); ok {
-		return userMsg
+	// 尝试从用户消息获取
+	if message := GetUserMessage(ctx); message != "" {
+		return message
+	}
+
+	// 向后兼容：尝试从旧的字符串 key 获取（用于迁移期间）
+	if ctx != nil {
+		if question, ok := ctx.Value("question").(string); ok {
+			return question
+		}
+		if userMsg, ok := ctx.Value("user_message").(string); ok {
+			return userMsg
+		}
 	}
 
 	return ""
@@ -204,9 +213,13 @@ func (p *Planner) Plan(ctx context.Context, question string) (*HLEPlan, error) {
 		zap.String("question_preview", utils.TruncateString(question, 100)),
 	)
 
-	logger.Info("开始生成解题计划")
+	planStartTime := time.Now()
+	logger.Info("开始生成解题计划",
+		zap.String("decision_point", "plan_generation_start"),
+		zap.Int("question_length", len(question)))
 
 	// Get historical context if retriever is available
+	retrievalStartTime := time.Now()
 	var historicalContext string
 	if p.retriever != nil {
 		// Build context from historical questions
@@ -217,14 +230,57 @@ func (p *Planner) Plan(ctx context.Context, question string) (*HLEPlan, error) {
 			"medium",
 		)
 
+		retrievalDuration := time.Since(retrievalStartTime)
 		if historicalContext != "" {
 			logger.Debug("获取到历史上下文",
-				zap.Int("context_length", len(historicalContext)))
+				zap.Int("context_length", len(historicalContext)),
+				zap.Duration("retrieval_duration", retrievalDuration),
+				zap.Float64("retrieval_duration_seconds", retrievalDuration.Seconds()),
+				zap.String("decision_point", "historical_context_retrieved"))
+		} else {
+			logger.Debug("未获取到历史上下文",
+				zap.Duration("retrieval_duration", retrievalDuration),
+				zap.String("decision_point", "no_historical_context"))
 		}
 	}
 
 	// Analyze question using perception layer
+	perceptionStartTime := time.Now()
 	analysis := p.perception.Analyze(question)
+	perceptionDuration := time.Since(perceptionStartTime)
+	logger.Debug("感知层分析完成",
+		zap.String("domain", string(analysis.Domain)),
+		zap.Bool("has_code", analysis.QuestionInfo.CodePresent),
+		zap.Duration("perception_duration", perceptionDuration),
+		zap.Float64("perception_duration_seconds", perceptionDuration.Seconds()),
+		zap.String("decision_point", "perception_analysis_complete"))
+
+	// Get knowledge base context (思维链参考)
+	kbStartTime := time.Now()
+	var chainContext string
+	if p.knowledgeBase != nil {
+		domain := string(analysis.Domain)
+		if domain == "" {
+			domain = "general"
+		}
+		
+		similarChains, err := p.knowledgeBase.RetrieveSimilar(ctx, question, domain, 3)
+		kbDuration := time.Since(kbStartTime)
+		if err == nil && len(similarChains) > 0 {
+			chainContext = p.knowledgeBase.FormatChainsForLLM(similarChains)
+			logger.Info("检索到相似思维链",
+				zap.Int("count", len(similarChains)),
+				zap.String("domain", domain),
+				zap.Duration("kb_retrieval_duration", kbDuration),
+				zap.Float64("kb_retrieval_duration_seconds", kbDuration.Seconds()),
+				zap.Int("chain_context_length", len(chainContext)),
+				zap.String("decision_point", "knowledge_base_chains_retrieved"))
+		} else {
+			logger.Debug("未检索到相似思维链",
+				zap.Duration("kb_retrieval_duration", kbDuration),
+				zap.String("decision_point", "no_knowledge_base_chains"))
+		}
+	}
 
 	// Select appropriate prompt template based on question type
 	templateName := p.selectPromptTemplate(analysis)
@@ -240,12 +296,22 @@ func (p *Planner) Plan(ctx context.Context, question string) (*HLEPlan, error) {
 	// Build prompt with question and context
 	var promptBuilder strings.Builder
 	promptBuilder.WriteString(template)
+	
+	// 添加思维链上下文（优先）
+	if chainContext != "" {
+		promptBuilder.WriteString("\n\n")
+		promptBuilder.WriteString(chainContext)
+		promptBuilder.WriteString("\n请参考以上解题思路，为当前问题制定解题计划。\n")
+	}
+	
+	// 添加历史上下文
 	promptBuilder.WriteString("\n\n历史上下文:\n")
 	if historicalContext != "" {
 		promptBuilder.WriteString(historicalContext)
 	} else {
 		promptBuilder.WriteString("无历史记录")
 	}
+	
 	promptBuilder.WriteString("\n\n题目:")
 	promptBuilder.WriteString(question)
 
@@ -253,30 +319,59 @@ func (p *Planner) Plan(ctx context.Context, question string) (*HLEPlan, error) {
 
 	logger.Debug("生成计划提示词",
 		zap.String("template", templateName),
-		zap.Int("prompt_length", len(fullPrompt)))
+		zap.Int("prompt_length", len(fullPrompt)),
+		zap.Int("historical_context_length", len(historicalContext)),
+		zap.Int("chain_context_length", len(chainContext)),
+		zap.String("decision_point", "prompt_constructed"))
 
 	// Generate plan using LLM
+	llmStartTime := time.Now()
 	response, err := p.llmClient.GenerateWithSystemPrompt(
 		ctx,
 		"你是一个专业的学术题目解题专家。请根据题目制定详细的解题计划。",
 		fullPrompt,
 	)
+	llmDuration := time.Since(llmStartTime)
 	if err != nil {
-		logger.Error("生成计划失败", zap.Error(err))
+		totalDuration := time.Since(planStartTime)
+		logger.Error("生成计划失败",
+			zap.Error(err),
+			zap.Duration("llm_duration", llmDuration),
+			zap.Duration("total_duration", totalDuration),
+			zap.String("decision_point", "plan_generation_failed"))
 		return nil, fmt.Errorf("failed to generate plan: %w", err)
 	}
 
+	logger.Debug("LLM 响应接收",
+		zap.Duration("llm_duration", llmDuration),
+		zap.Float64("llm_duration_seconds", llmDuration.Seconds()),
+		zap.Int("response_length", len(response)),
+		zap.String("decision_point", "llm_response_received"))
+
 	// Parse the plan from LLM response
+	parseStartTime := time.Now()
 	plan := p.parsePlan(response, question)
+	parseDuration := time.Since(parseStartTime)
 
 	if plan == nil {
-		logger.Error("无法解析生成的计划")
+		totalDuration := time.Since(planStartTime)
+		logger.Error("无法解析生成的计划",
+			zap.Duration("parse_duration", parseDuration),
+			zap.Duration("total_duration", totalDuration),
+			zap.String("decision_point", "plan_parse_failed"))
 		return nil, fmt.Errorf("failed to parse plan from response")
 	}
 
+	totalDuration := time.Since(planStartTime)
 	logger.Info("计划生成成功",
 		zap.String("plan_id", plan.ID),
-		zap.Int("total_steps", len(plan.Steps)))
+		zap.Int("total_steps", len(plan.Steps)),
+		zap.Duration("total_duration", totalDuration),
+		zap.Float64("total_duration_seconds", totalDuration.Seconds()),
+		zap.Duration("llm_duration", llmDuration),
+		zap.Duration("parse_duration", parseDuration),
+		zap.String("decision_point", "plan_generation_success"),
+		zap.Int("plan_steps_count", len(plan.Steps)))
 
 	return plan, nil
 }
