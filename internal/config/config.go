@@ -11,13 +11,15 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	App     AppConfig     `yaml:"app"`
-	Model   ModelConfig   `yaml:"model"`
-	Agent   AgentConfig   `yaml:"agent"`
-	Tools   ToolsConfig   `yaml:"tools"`
-	Memory  MemoryConfig  `yaml:"memory"`
-	Output  OutputConfig  `yaml:"output"`
-	Audit   AuditConfig   `yaml:"audit"`
+	App           AppConfig           `yaml:"app"`
+	Model         ModelConfig         `yaml:"model"`
+	Agent         AgentConfig         `yaml:"agent"`
+	Tools         ToolsConfig         `yaml:"tools"`
+	Memory        MemoryConfig        `yaml:"memory"`
+	Output        OutputConfig        `yaml:"output"`
+	Audit         AuditConfig         `yaml:"audit"`
+	KnowledgeBase KnowledgeBaseConfig `yaml:"knowledge_base"`
+	Logging       LoggingConfig       `yaml:"logging"`
 }
 
 // AppConfig represents application settings
@@ -27,15 +29,35 @@ type AppConfig struct {
 	LogLevel string `yaml:"log_level"`
 }
 
+// LoggingConfig represents logging settings
+type LoggingConfig struct {
+	Level       string `yaml:"level"`       // debug, info, warn, error
+	OutputPath  string `yaml:"output_path"` // stdout, stderr, or file path
+	Development bool   `yaml:"development"` // development mode
+
+	// Rotation settings
+	Rotation RotationConfig `yaml:"rotation"`
+}
+
+// RotationConfig represents log rotation settings
+type RotationConfig struct {
+	Enabled    bool `yaml:"enabled"`     // Enable log rotation
+	MaxSize    int  `yaml:"max_size"`    // Max size in MB before rotation
+	MaxBackups int  `yaml:"max_backups"` // Max number of old log files to keep
+	MaxAge     int  `yaml:"max_age"`     // Max days to keep old log files
+	Compress   bool `yaml:"compress"`    // Compress rotated log files
+	LocalTime  bool `yaml:"local_time"`  // Use local time for rotation
+}
+
 // ProviderType represents the LLM provider type
 type ProviderType string
 
 const (
-	ProviderOpenAI  ProviderType = "openai"
+	ProviderOpenAI    ProviderType = "openai"
 	ProviderAnthropic ProviderType = "anthropic"
-	ProviderDeepSeek ProviderType = "deepseek"
-	ProviderOneAPI  ProviderType = "oneapi"
-	ProviderCustom  ProviderType = "custom"
+	ProviderDeepSeek  ProviderType = "deepseek"
+	ProviderOneAPI    ProviderType = "oneapi"
+	ProviderCustom    ProviderType = "custom"
 )
 
 // SupportedProviders contains all supported provider types
@@ -64,13 +86,13 @@ func (p ProviderType) String() string {
 
 // ModelConfig represents LLM model settings
 type ModelConfig struct {
-	Provider   string  `yaml:"provider"`
-	APIKey     string  `yaml:"api_key"`
-	Model      string  `yaml:"model"`
-	BaseURL    string  `yaml:"base_url"`
+	Provider    string  `yaml:"provider"`
+	APIKey      string  `yaml:"api_key"`
+	Model       string  `yaml:"model"`
+	BaseURL     string  `yaml:"base_url"`
 	Temperature float64 `yaml:"temperature"`
-	MaxTokens  int     `yaml:"max_tokens"`
-	Timeout    int     `yaml:"timeout"`
+	MaxTokens   int     `yaml:"max_tokens"`
+	Timeout     int     `yaml:"timeout"`
 }
 
 // GetProviderType returns the ProviderType from the string
@@ -87,23 +109,45 @@ type AgentConfig struct {
 	Type          string `yaml:"type"`
 	MaxIterations int    `yaml:"max_iterations"`
 	CheckInterval int    `yaml:"check_interval"`
+
+	// Executor 配置
+	Executor ExecutorConfig `yaml:"executor"`
+}
+
+// ExecutorConfig represents executor settings
+type ExecutorConfig struct {
+	MaxRetries     int  `yaml:"max_retries"`     // 最大重试次数
+	RetryBackoff   int  `yaml:"retry_backoff"`   // 重试退避时间（秒）
+	EnableFallback bool `yaml:"enable_fallback"` // 是否启用降级到 LLM
 }
 
 // ToolsConfig represents tool settings
 type ToolsConfig struct {
-	Python   ToolConfig `yaml:"python"`
-	SageMath ToolConfig `yaml:"sagemath"`
+	Python    ToolConfig `yaml:"python"`
+	SageMath  ToolConfig `yaml:"sagemath"`
 	Retriever ToolConfig `yaml:"retriever"`
 }
 
 // ToolConfig represents a single tool configuration
 type ToolConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Endpoint      string `yaml:"endpoint"`
-	Timeout       int    `yaml:"timeout"`
-	SandboxEnabled bool  `yaml:"sandbox_enabled,omitempty"`
-	DockerImage   string `yaml:"docker_image,omitempty"`
-	Type          string `yaml:"type,omitempty"`
+	Enabled        bool   `yaml:"enabled"`
+	Endpoint       string `yaml:"endpoint"`                  // HTTP endpoint (if using HTTP API)
+	Timeout        int    `yaml:"timeout"`                   // Timeout in seconds
+	SandboxEnabled bool   `yaml:"sandbox_enabled,omitempty"` // Enable sandbox mode
+	DockerImage    string `yaml:"docker_image,omitempty"`    // Docker image name (if using Docker)
+	ExecutionMode  string `yaml:"execution_mode,omitempty"`  // "local", "docker", or "http"
+	Type           string `yaml:"type,omitempty"`            // Tool type (for retriever)
+}
+
+// KnowledgeBaseConfig represents knowledge base settings
+type KnowledgeBaseConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	StoragePath      string  `yaml:"storage_path"`
+	MaxResults       int     `yaml:"max_results"`
+	MinSimilarity    float64 `yaml:"min_similarity"`
+	WeightKeywords   float64 `yaml:"weight_keywords"`
+	WeightDomain     float64 `yaml:"weight_domain"`
+	WeightComplexity float64 `yaml:"weight_complexity"`
 }
 
 // MemoryConfig represents memory settings
@@ -122,9 +166,9 @@ type OutputConfig struct {
 
 // AuditConfig represents audit settings
 type AuditConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	LogFile       string `yaml:"log_file"`
-	RequireApproval bool `yaml:"require_approval"`
+	Enabled         bool   `yaml:"enabled"`
+	LogFile         string `yaml:"log_file"`
+	RequireApproval bool   `yaml:"require_approval"`
 }
 
 // Load loads configuration from a YAML file
@@ -133,18 +177,18 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	
+
 	// Expand environment variables
 	expanded := os.ExpandEnv(string(data))
-	
+
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-	
+
 	// Post-process configuration
 	cfg.postProcess()
-	
+
 	return &cfg, nil
 }
 
@@ -152,20 +196,20 @@ func Load(path string) (*Config, error) {
 func (c *Config) postProcess() {
 	// Expand environment variables in API key
 	c.Model.APIKey = os.ExpandEnv(c.Model.APIKey)
-	
+
 	// Set defaults if not specified
 	if c.Agent.MaxIterations == 0 {
 		c.Agent.MaxIterations = 10
 	}
-	
+
 	if c.Agent.CheckInterval == 0 {
 		c.Agent.CheckInterval = 1
 	}
-	
+
 	if c.Memory.ShortTermMaxSteps == 0 {
 		c.Memory.ShortTermMaxSteps = 100
 	}
-	
+
 	if c.App.LogLevel == "" {
 		c.App.LogLevel = "info"
 	}
@@ -191,7 +235,7 @@ func (c *Config) Validate() error {
 
 	// Validate API key (skip for localhost/testing)
 	if c.Model.APIKey == "" && !strings.Contains(c.Model.BaseURL, "localhost") &&
-	   !strings.Contains(c.Model.BaseURL, "127.0.0.1") {
+		!strings.Contains(c.Model.BaseURL, "127.0.0.1") {
 		return fmt.Errorf("API key is required for non-localhost endpoints")
 	}
 
@@ -219,10 +263,10 @@ func (c *Config) validateModelName(provider ProviderType) error {
 
 	// Common model name patterns
 	commonModels := map[ProviderType][]string{
-		ProviderOpenAI:   {"gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-3.5"},
+		ProviderOpenAI:    {"gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-3.5"},
 		ProviderAnthropic: {"claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"},
-		ProviderDeepSeek: {"deepseek-chat", "deepseek-coder"},
-		ProviderOneAPI:   {"MiniMax-M2.1", "MiniMax-M2", "qwen-turbo", "qwen-plus", "glm-4"},
+		ProviderDeepSeek:  {"deepseek-chat", "deepseek-coder"},
+		ProviderOneAPI:    {"MiniMax-M2.1", "MiniMax-M2", "qwen-turbo", "qwen-plus", "glm-4"},
 	}
 
 	// Check if model matches known patterns

@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+hle-agent
+import-chains
+
+# Test files
+*_test.go
+coverage.out
+coverage_*.out
+*.test
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test data
+testdata/
+tests/
+
+# Logs
+logs/
+*.log
+
+# Data directories
+data/
+results/
+
+# Docker
+docker/
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Environment
+.env
+.env.local
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+

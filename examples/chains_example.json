@@ -1,0 +1,73 @@
+[
+  {
+    "id": "chain_math_001",
+    "question": "计算 1+1 等于多少？",
+    "question_id": "hle_math_001",
+    "domain": "math",
+    "complexity": "low",
+    "keywords": ["计算", "加法", "基础算术"],
+    "model": "gpt-4",
+    "reasoning": "这是一个非常简单的加法问题。1+1 是最基础的算术运算，任何学过数学的人都知道答案是 2。",
+    "steps": [
+      {
+        "step_id": 1,
+        "description": "识别问题类型",
+        "action": "think",
+        "content": "这是一个基础算术问题，需要执行加法运算",
+        "result": "确认是加法运算"
+      },
+      {
+        "step_id": 2,
+        "description": "执行计算",
+        "action": "calculate",
+        "content": "1 + 1 = ?",
+        "result": "2"
+      },
+      {
+        "step_id": 3,
+        "description": "验证答案",
+        "action": "verify",
+        "content": "检查计算是否正确",
+        "result": "答案正确"
+      }
+    ],
+    "answer": "2",
+    "confidence": 0.99
+  },
+  {
+    "id": "chain_math_002",
+    "question": "求解方程 x + 5 = 10",
+    "question_id": "hle_math_002",
+    "domain": "math",
+    "complexity": "medium",
+    "keywords": ["方程", "求解", "代数"],
+    "model": "gpt-4",
+    "reasoning": "这是一个一元一次方程。需要将未知数 x 移到等式一边，常数移到另一边。\n\n步骤：\n1. 从等式两边同时减去 5\n2. x = 10 - 5\n3. x = 5\n\n验证：5 + 5 = 10，正确。",
+    "steps": [
+      {
+        "step_id": 1,
+        "description": "识别方程类型",
+        "action": "think",
+        "content": "这是一元一次方程，需要求解 x",
+        "result": "确认方程类型"
+      },
+      {
+        "step_id": 2,
+        "description": "移项",
+        "action": "calculate",
+        "content": "x = 10 - 5",
+        "result": "x = 5"
+      },
+      {
+        "step_id": 3,
+        "description": "验证",
+        "action": "verify",
+        "content": "5 + 5 = 10",
+        "result": "验证通过"
+      }
+    ],
+    "answer": "x = 5",
+    "confidence": 0.95
+  }
+]
+

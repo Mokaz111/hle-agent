@@ -5,13 +5,26 @@ app:
   version: "1.0.0"
   log_level: "debug"
 
+# Logging Configuration
+logging:
+  level: "debug"              # debug, info, warn, error
+  output_path: "./logs/hle-agent.log"  # stdout, stderr, or file path
+  development: false          # development mode (colored output, etc.)
+  rotation:
+    enabled: true             # Enable log rotation
+    max_size: 100             # Max size in MB before rotation
+    max_backups: 10           # Max number of old log files to keep
+    max_age: 30               # Max days to keep old log files
+    compress: true            # Compress rotated log files
+    local_time: true          # Use local time for rotation
+
 # LLM Configuration
 # 支持多种 OpenAI 兼容的 API 提供商
 model:
   provider: "openai"  # openai, anthropic, deepseek, oneapi, custom
   api_key: "sk-api-ORpmGAVbyUtWl6j-oE5Xv60xIy596Vqnu509ezB-drgkL0oxujYiEDLVgw_7IUifaWmpYPAUoiRpqNOvez-kBaaSi4ZgDBqKoboetKMVj8Kb26rrZdzsYDU"
-  model: "MiniMax-M2.1"  # 模型名称，根据你的 API 提供商设置
-  base_url: "https://api.minimaxi.com/v1"  # API 基础地址
+  model: "MiniMax-M2.1"  
+  base_url: "https://api.minimaxi.com/v1"  
   temperature: 0.0
   max_tokens: 4096
   timeout: 60
@@ -39,19 +52,27 @@ agent:
   type: "plan_execute"  # plan_execute, supervisor, deep_agent
   max_iterations: 10
   check_interval: 1
+  executor:
+    max_retries: 3          # 工具执行最大重试次数
+    retry_backoff: 1        # 重试退避时间（秒），指数退避的基础时间
+    enable_fallback: true   # 工具失败时是否降级到 LLM
 
 # Tools Configuration
 tools:
   python:
     enabled: true
     endpoint: "http://localhost:5000/python"
-    timeout: 30
+    timeout: 300
     sandbox_enabled: true
+    execution_mode: "local"  # "local", "docker", or "http"
+    docker_image: "hle-agent-python:latest"  # Used when execution_mode is "docker"
   sagemath:
     enabled: true
     endpoint: "http://localhost:5001/sagemath"
-    timeout: 60
-    docker_image: "hle-agent-sagemath:latest"
+    timeout: 300
+    sandbox_enabled: true
+    execution_mode: "local"  # "local", "docker", or "http"
+    docker_image: "hle-agent-sagemath:latest"  # Used when execution_mode is "docker"
   retriever:
     enabled: true
     type: "memory"  # memory, redis, milvus
@@ -73,3 +94,13 @@ audit:
   enabled: true
   log_file: "./logs/audit.log"
   require_approval: false
+
+# Knowledge Base Configuration
+knowledge_base:
+  enabled: true
+  storage_path: "./data/knowledge_base.db"
+  max_results: 3
+  min_similarity: 0.5
+  weight_keywords: 0.4
+  weight_domain: 0.4
+  weight_complexity: 0.2

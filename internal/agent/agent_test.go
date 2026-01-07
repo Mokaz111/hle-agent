@@ -41,7 +41,7 @@ func TestAnswerResultStruct(t *testing.T) {
 
 func TestExecutorCreation(t *testing.T) {
 	registry := NewToolRegistry()
-	executor := NewExecutor(registry)
+	executor := NewExecutor(registry, nil, nil) // nil LLM client and config for testing
 
 	assert.NotNil(t, executor)
 	assert.NotNil(t, executor.toolRegistry)

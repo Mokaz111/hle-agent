@@ -15,6 +15,7 @@ import (
 	"github.com/hle-agent/hle-agent/internal/config"
 	"github.com/hle-agent/hle-agent/internal/models"
 	"github.com/hle-agent/hle-agent/pkg/feedback"
+	"github.com/hle-agent/hle-agent/pkg/knowledgebase"
 	"github.com/hle-agent/hle-agent/pkg/llm"
 	"github.com/hle-agent/hle-agent/pkg/logging"
 	"github.com/hle-agent/hle-agent/pkg/memory"
@@ -66,12 +67,77 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	// Create tool registry
 	toolRegistry := NewToolRegistry()
 
-	// Register available tools
-	pythonExecutor := pythonTool.NewPythonExecutor(300) // 5分钟超时
-	sageExecutor := sageTool.NewSageMathExecutor(300)
+	// Register available tools based on configuration
+	var pythonExecutor Tool
+	var sageExecutor Tool
 
-	toolRegistry.Register(pythonExecutor)
-	toolRegistry.Register(sageExecutor)
+	// Python executor
+	if cfg.Tools.Python.Enabled {
+		timeout := cfg.Tools.Python.Timeout
+		if timeout <= 0 {
+			timeout = 300 // Default 5 minutes
+		}
+
+		executionMode := cfg.Tools.Python.ExecutionMode
+		if executionMode == "" && cfg.Tools.Python.DockerImage != "" {
+			executionMode = "docker"
+		}
+		if executionMode == "" {
+			executionMode = "local"
+		}
+
+		if executionMode == "docker" {
+			imageName := cfg.Tools.Python.DockerImage
+			if imageName == "" {
+				imageName = "hle-agent-python:latest"
+			}
+			pythonExecutor = pythonTool.NewDockerPythonExecutor(timeout, imageName)
+			logger.Info("使用 Docker 模式执行 Python 代码",
+				zap.String("image", imageName),
+				zap.Int("timeout", timeout))
+		} else {
+			pythonExecutor = pythonTool.NewPythonExecutor(timeout)
+			logger.Info("使用本地模式执行 Python 代码", zap.Int("timeout", timeout))
+		}
+		toolRegistry.Register(pythonExecutor)
+	}
+
+	// SageMath executor
+	if cfg.Tools.SageMath.Enabled {
+		timeout := cfg.Tools.SageMath.Timeout
+		if timeout <= 0 {
+			timeout = 300 // Default 5 minutes
+		}
+
+		executionMode := cfg.Tools.SageMath.ExecutionMode
+		if executionMode == "" && cfg.Tools.SageMath.DockerImage != "" {
+			executionMode = "docker"
+		}
+		if executionMode == "" {
+			executionMode = "local"
+		}
+
+		if executionMode == "docker" {
+			imageName := cfg.Tools.SageMath.DockerImage
+			if imageName == "" {
+				imageName = "hle-agent-sagemath:latest"
+			}
+			sageExecutor = sageTool.NewDockerSageMathExecutor(timeout, imageName)
+			logger.Info("使用 Docker 模式执行 SageMath 代码",
+				zap.String("image", imageName),
+				zap.Int("timeout", timeout))
+		} else {
+			sageExecutor = sageTool.NewSageMathExecutor(timeout)
+			logger.Info("使用本地模式执行 SageMath 代码", zap.Int("timeout", timeout))
+		}
+		toolRegistry.Register(sageExecutor)
+	}
+
+	if pythonExecutor != nil || sageExecutor != nil {
+		logger.Info("已注册工具",
+			zap.Bool("python_enabled", pythonExecutor != nil),
+			zap.Bool("sagemath_enabled", sageExecutor != nil))
+	}
 
 	logger.Info("已注册工具",
 		zap.String("python_executor", pythonExecutor.Name()),
@@ -82,11 +148,65 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 	shortTermMem.StartSession(generateSessionID())
 	retrieverLayer := retriever.NewRetriever(shortTermMem, nil)
 
-	// Create Planner
-	planner := NewPlanner(llmClient, retrieverLayer)
+	// Create knowledge base (if enabled)
+	var knowledgeBase knowledgebase.KnowledgeBase
+	if cfg.KnowledgeBase.Enabled {
+		kbConfig := &knowledgebase.KnowledgeBaseConfig{
+			StoragePath:      cfg.KnowledgeBase.StoragePath,
+			MaxResults:       cfg.KnowledgeBase.MaxResults,
+			MinSimilarity:    cfg.KnowledgeBase.MinSimilarity,
+			WeightKeywords:   cfg.KnowledgeBase.WeightKeywords,
+			WeightDomain:     cfg.KnowledgeBase.WeightDomain,
+			WeightComplexity: cfg.KnowledgeBase.WeightComplexity,
+		}
 
-	// Create Executor
-	executor := NewExecutor(toolRegistry)
+		// 设置默认值
+		if kbConfig.StoragePath == "" {
+			kbConfig.StoragePath = "./data/knowledge_base.db"
+		}
+		if kbConfig.MaxResults == 0 {
+			kbConfig.MaxResults = 3
+		}
+		if kbConfig.MinSimilarity == 0 {
+			kbConfig.MinSimilarity = 0.5
+		}
+		if kbConfig.WeightKeywords == 0 {
+			kbConfig.WeightKeywords = 0.4
+		}
+		if kbConfig.WeightDomain == 0 {
+			kbConfig.WeightDomain = 0.4
+		}
+		if kbConfig.WeightComplexity == 0 {
+			kbConfig.WeightComplexity = 0.2
+		}
+
+		var err error
+		knowledgeBase, err = knowledgebase.NewKnowledgeBase(kbConfig)
+		if err != nil {
+			logger.Warn("知识库初始化失败，将不使用知识库", zap.Error(err))
+		} else {
+			count, _ := knowledgeBase.GetChainCount(context.Background())
+			logger.Info("知识库初始化成功", zap.Int("chain_count", count))
+		}
+	}
+
+	// Create Planner
+	planner := NewPlanner(llmClient, retrieverLayer, knowledgeBase)
+
+	// Create Executor with configuration
+	executorConfig := &ExecutorConfig{
+		MaxRetries:     cfg.Agent.Executor.MaxRetries,
+		RetryBackoff:   time.Duration(cfg.Agent.Executor.RetryBackoff) * time.Second,
+		EnableFallback: cfg.Agent.Executor.EnableFallback,
+	}
+	// 设置默认值
+	if executorConfig.MaxRetries == 0 {
+		executorConfig.MaxRetries = 3
+	}
+	if executorConfig.RetryBackoff == 0 {
+		executorConfig.RetryBackoff = 1 * time.Second
+	}
+	executor := NewExecutor(toolRegistry, llmClient, executorConfig)
 
 	// Create Replanner
 	replanner := NewReplanner(llmClient)
@@ -107,7 +227,9 @@ func NewHLEAgent(cfg *config.Config) (*HLEAgent, error) {
 		return nil, fmt.Errorf("创建 Planner 失败: %w", err)
 	}
 
-	// Create executor agent with our custom executor
+	// Create executor agent
+	// Note: Tools are registered separately through Eino ADK's tool system
+	// The Executor will use tools through the plan steps
 	executorAgent, err := planexecute.NewExecutor(ctx, &planexecute.ExecutorConfig{
 		Model: chatModel,
 	})
@@ -171,167 +293,177 @@ func (a *HLEAgent) Run(ctx context.Context, input *adk.AgentInput, opts ...adk.A
 	return a.agent.Run(ctx, input, opts...)
 }
 
-// Process processes a single question and returns the answer (legacy method)
+// Process processes a single question and returns the answer
+// This method now uses Eino ADK Agent.Run() instead of manual execution loop
 func (a *HLEAgent) Process(ctx context.Context, question string) (*AnswerResult, error) {
 	logger := a.logger.With(
 		zap.String("action", "Process"),
 		zap.String("question_preview", utils.TruncateString(question, 100)),
 	)
 
-	logger.Info("开始处理问题")
+	logger.Info("开始处理问题",
+		zap.String("decision_point", "process_start"),
+		zap.Int("question_length", len(question)))
 
 	startTime := time.Now()
 
 	// Start new session
+	sessionStartTime := time.Now()
 	sessionID := generateSessionID()
 	a.shortTermMem.StartSession(sessionID)
+	sessionDuration := time.Since(sessionStartTime)
+	logger.Debug("会话已启动",
+		zap.String("session_id", sessionID),
+		zap.Duration("session_init_duration", sessionDuration),
+		zap.String("decision_point", "session_started"))
 
 	// Step 0: Perception layer - analyze the question
+	perceptionStartTime := time.Now()
 	analysis := a.perception.Analyze(question)
+	perceptionDuration := time.Since(perceptionStartTime)
 
 	logger.Debug("感知层分析完成",
 		zap.String("domain", string(analysis.Domain)),
-		zap.Bool("has_code", analysis.QuestionInfo.CodePresent))
+		zap.Bool("has_code", analysis.QuestionInfo.CodePresent),
+		zap.Duration("perception_duration", perceptionDuration),
+		zap.Float64("perception_duration_seconds", perceptionDuration.Seconds()),
+		zap.String("decision_point", "perception_analysis_complete"))
 
 	// Store question in short-term memory
+	memoryStartTime := time.Now()
 	a.shortTermMem.AddQuestion(question, analysis)
+	memoryDuration := time.Since(memoryStartTime)
+	logger.Debug("问题已存储到记忆",
+		zap.Duration("memory_store_duration", memoryDuration),
+		zap.String("decision_point", "question_stored"))
 
-	// Step 1: Retrieve similar historical problems (if configured)
-	var historicalContext string
-	if a.retriever != nil {
-		recommendedTool := a.perception.GetRecommendedTool(question)
-		tools := []string{}
-		if recommendedTool != "" {
-			tools = append(tools, recommendedTool)
-		}
+	// Use Eino ADK Agent to process the question
+	// Set context with question for Planner and Replanner
+	ctx = WithQuestion(ctx, question)
+	ctx = WithSessionID(ctx, sessionID)
 
-		complexity := "medium"
-		if analysis.QuestionInfo != nil {
-			if analysis.QuestionInfo.Complexity == "high" {
-				complexity = "high"
-			} else if analysis.QuestionInfo.Complexity == "low" {
-				complexity = "low"
-			}
-		}
-
-		historicalContext = a.retriever.BuildContextForPlanner(
-			question,
-			string(analysis.Domain),
-			tools,
-			complexity,
-		)
-
-		if historicalContext != "" {
-			logger.Debug("获取到历史相似问题",
-				zap.Int("context_length", len(historicalContext)))
-		}
+	// Create AgentInput for Eino ADK
+	input := &adk.AgentInput{
+		Messages: []adk.Message{
+			{
+				Role:    "user",
+				Content: question,
+			},
+		},
 	}
 
-	// Step 2: Generate plan using custom Planner
-	plan, err := a.planner.Plan(ctx, question)
-	if err != nil {
-		logger.Error("计划生成失败", zap.Error(err))
-		return nil, fmt.Errorf("计划生成失败: %w", err)
-	}
+	// Run the agent using Eino ADK
+	agentRunStartTime := time.Now()
+	iterator := a.agent.Run(ctx, input)
+	logger.Debug("Eino Agent 已启动",
+		zap.String("decision_point", "eino_agent_started"))
 
-	// Store plan in memory
-	a.shortTermMem.AddPlan(&models.Plan{
-		ID:         plan.ID,
-		QuestionID: plan.QuestionID,
-		Steps:      convertSteps(plan.Steps),
-		TotalSteps: len(plan.Steps),
-	})
-
-	logger.Info("计划生成成功",
-		zap.String("plan_id", plan.ID),
-		zap.Int("total_steps", len(plan.Steps)))
-
-	// Execute plan steps using custom Executor
-	stepResults := make([]*HLEStepResult, 0, len(plan.Steps))
-	maxIterations := a.cfg.Agent.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = 10
-	}
-
+	// Collect results from async iterator
 	var finalAnswer string
-	var finalConfidence float64
+	var finalConfidence float64 = 0.8 // Default confidence
+	eventCount := 0
+	messageCount := 0
+	var agentRunDuration time.Duration
+	var eventProcessingDuration time.Duration
 
-	for i := 0; i < len(plan.Steps) && i < maxIterations; i++ {
-		step := &plan.Steps[i]
+	// Process events from the async iterator
+	// According to Eino ADK, Next() returns (event, hasNext)
+	eventProcessingStartTime := time.Now()
+	for {
+		event, hasNext := iterator.Next()
+		if !hasNext {
+			break
+		}
 
-		logger.Info("开始执行步骤",
-			zap.Int("step_index", i+1),
-			zap.Int("total_steps", len(plan.Steps)),
-			zap.String("step_description", step.Description))
+		eventCount++
+		if event == nil {
+			continue
+		}
 
-		// Execute step
-		stepResult, err := a.executor.Execute(ctx, plan, step)
-		if err != nil {
-			logger.Error("步骤执行出错", zap.Error(err))
-			stepResult = &HLEStepResult{
-				StepID:     step.ID,
-				Success:    false,
-				Error:      err.Error(),
-				Output:     "",
-				Confidence: 0.0,
+		// Try to extract message from event using Eino ADK helper
+		if msg, remainingEvent, err := adk.GetMessage(event); err == nil && msg != nil {
+			if msg.Role == "assistant" {
+				messageCount++
+				if finalAnswer == "" {
+					finalAnswer = msg.Content
+				} else {
+					// Append to existing answer if multiple messages
+					finalAnswer += "\n\n" + msg.Content
+				}
+				logger.Debug("收到 Agent 响应",
+					zap.Int("message_index", messageCount),
+					zap.String("content_preview", utils.TruncateString(msg.Content, 100)),
+					zap.Int("content_length", len(msg.Content)),
+					zap.String("decision_point", "agent_message_received"))
+			}
+			// Continue processing remaining events if any
+			if remainingEvent != nil {
+				event = remainingEvent
 			}
 		}
 
-		stepResults = append(stepResults, stepResult)
+		// Log event for debugging
+		logger.Debug("处理 Agent 事件",
+			zap.Int("event_index", eventCount),
+			zap.String("decision_point", "event_processed"))
+	}
+	eventProcessingDuration = time.Since(eventProcessingStartTime)
+	agentRunDuration = time.Since(agentRunStartTime)
 
-		// Store step result in memory
-		stepID, _ := strconv.Atoi(step.ID)
-		a.shortTermMem.AddStepResult(&models.StepResult{
-			StepID:     stepID,
-			Success:    stepResult.Success,
-			Output:     stepResult.Output,
-			Confidence: stepResult.Confidence,
-			Timestamp:  time.Now().Format(time.RFC3339),
-		})
+	logger.Debug("事件处理完成",
+		zap.Int("total_events", eventCount),
+		zap.Int("total_messages", messageCount),
+		zap.Duration("event_processing_duration", eventProcessingDuration),
+		zap.Duration("agent_run_duration", agentRunDuration),
+		zap.String("decision_point", "event_processing_complete"))
 
-		// Check if this is the final step and generate answer
-		if i == len(plan.Steps)-1 || i == maxIterations-1 {
-			finalAnswer = stepResult.Output
-			finalConfidence = stepResult.Confidence
-		}
+	// If no answer was extracted, try to synthesize from memory
+	if finalAnswer == "" {
+		logger.Debug("未从事件流中提取到答案，尝试从记忆合成",
+			zap.String("decision_point", "answer_synthesis_start"))
 
-		// Check if replanning is needed
-		if i < len(plan.Steps)-1 {
-			analysis := a.replanner.analyzeStepResults(stepResults)
-			if analysis.NeedReplan {
-				logger.Info("触发重新规划",
-					zap.Float64("avg_confidence", analysis.AvgConfidence))
+		synthesisStartTime := time.Now()
+		allStepResults := a.shortTermMem.GetStepResults()
+		if len(allStepResults) > 0 {
+			var reasoningParts []string
+			for _, sr := range allStepResults {
+				if sr.Output != nil {
+					reasoningParts = append(reasoningParts, fmt.Sprintf("步骤 %d: %v", sr.StepID, sr.Output))
+				}
+			}
+			if len(reasoningParts) > 0 {
+				combinedReasoning := strings.Join(reasoningParts, "\n\n")
+				logger.Debug("准备合成答案",
+					zap.Int("step_results_count", len(allStepResults)),
+					zap.Int("reasoning_parts_count", len(reasoningParts)),
+					zap.Int("combined_reasoning_length", len(combinedReasoning)),
+					zap.String("decision_point", "answer_synthesis_prepare"))
 
-				// Replan
-				newPlan, err := a.replanner.Replan(ctx, plan, stepResults, question)
-				if err != nil {
-					logger.Error("重新规划失败", zap.Error(err))
-				} else if newPlan != nil {
-					plan = newPlan
-					logger.Info("新计划生成成功",
-						zap.String("new_plan_id", plan.ID),
-						zap.Int("new_total_steps", len(plan.Steps)))
+				// Use LLM to synthesize final answer
+				synthesizedAnswer, err := a.synthesizeAnswer(ctx, question, "", combinedReasoning)
+				synthesisDuration := time.Since(synthesisStartTime)
+				if err == nil {
+					finalAnswer = synthesizedAnswer
+					logger.Info("答案合成成功",
+						zap.Duration("synthesis_duration", synthesisDuration),
+						zap.Float64("synthesis_duration_seconds", synthesisDuration.Seconds()),
+						zap.Int("synthesized_answer_length", len(finalAnswer)),
+						zap.String("decision_point", "answer_synthesis_success"))
+				} else {
+					logger.Warn("合成答案失败",
+						zap.Error(err),
+						zap.Duration("synthesis_duration", synthesisDuration),
+						zap.String("decision_point", "answer_synthesis_failed"))
 				}
 			}
 		}
-	}
 
-	// Generate final answer using reasoning if available
-	allStepResults := a.shortTermMem.GetStepResults()
-	if len(allStepResults) > 0 {
-		var reasoningParts []string
-		for _, sr := range allStepResults {
-			if sr.Output != nil {
-				reasoningParts = append(reasoningParts, fmt.Sprintf("步骤 %d: %v", sr.StepID, sr.Output))
-			}
-		}
-		if len(reasoningParts) > 0 {
-			combinedReasoning := strings.Join(reasoningParts, "\n\n")
-			// Use LLM to synthesize final answer
-			synthesizedAnswer, err := a.synthesizeAnswer(ctx, question, finalAnswer, combinedReasoning)
-			if err == nil {
-				finalAnswer = synthesizedAnswer
-			}
+		// If still no answer, use a fallback
+		if finalAnswer == "" {
+			logger.Warn("无法生成答案，使用默认回复",
+				zap.String("decision_point", "answer_fallback_to_default"))
+			finalAnswer = "无法生成答案，请检查输入或重试。"
+			finalConfidence = 0.0
 		}
 	}
 
@@ -340,6 +472,7 @@ func (a *HLEAgent) Process(ctx context.Context, question string) (*AnswerResult,
 
 	// Process feedback
 	questionID := generateQuestionID()
+	allStepResults := a.shortTermMem.GetStepResults()
 	feedbackRecord := a.feedback.Process(
 		questionID,
 		question,
@@ -362,23 +495,26 @@ func (a *HLEAgent) Process(ctx context.Context, question string) (*AnswerResult,
 		}
 	}
 
+	totalDuration := time.Since(startTime)
 	logger.Info("问题处理完成",
 		zap.String("answer_preview", utils.TruncateString(finalAnswer, 100)),
-		zap.Float64("confidence", finalConfidence))
+		zap.Int("answer_length", len(finalAnswer)),
+		zap.Float64("confidence", finalConfidence),
+		zap.Duration("total_duration", totalDuration),
+		zap.Float64("total_duration_seconds", totalDuration.Seconds()),
+		zap.Duration("agent_run_duration", agentRunDuration),
+		zap.Int("total_events", eventCount),
+		zap.Int("total_messages", messageCount),
+		zap.String("decision_point", "process_complete"))
 
-	duration := time.Since(startTime).Seconds()
+	duration := totalDuration.Seconds()
 
 	// Convert step results to models.StepResult
-	modelStepResults := make([]*models.StepResult, len(stepResults))
-	for i, sr := range stepResults {
-		stepID, _ := strconv.Atoi(sr.StepID)
-		modelStepResults[i] = &models.StepResult{
-			StepID:     stepID,
-			Success:    sr.Success,
-			Output:     sr.Output,
-			Confidence: sr.Confidence,
-			Timestamp:  time.Now().Format(time.RFC3339),
-		}
+	// Use step results from memory (already in correct format)
+	modelStepResults := allStepResults
+	if len(modelStepResults) == 0 {
+		// Create empty slice if no results
+		modelStepResults = make([]*models.StepResult, 0)
 	}
 
 	return &AnswerResult{
